@@ -6023,6 +6023,55 @@ def cmd_pair(args):
     info("Si esa instancia usa token compartido, el router base ya podrá enrutarle los updates")
 
 
+def cmd_bb(args):
+    """Superficie Black Boss para enrutar acciones clave sin duplicar la CLI."""
+    action = (getattr(args, "subcommand", "") or "").strip().lower()
+    target_name = getattr(args, "name", "")
+
+    if not action:
+        print_logo(compact=True)
+        section("Black Boss", "Capa operativa rápida para Melissa")
+        shortcuts = [
+            ("melissa bb config [n]", "Editar configuración de una instancia"),
+            ("melissa bb chat [n]", "Entrar al chat operativo"),
+            ("melissa bb doctor", "Diagnóstico completo"),
+            ("melissa bb sync", "Clonar runtime exacto a todas las instancias"),
+            ("melissa bb new", "Crear nueva instancia"),
+            ("melissa bb guide", "Abrir guía operativa"),
+        ]
+        for cmd_text, desc in shortcuts:
+            print(f"  {q(C.CYN, cmd_text):<30} {q(C.G1, desc)}")
+        nl()
+        info("Usa el patrón: melissa bb <acción> [instancia]")
+        return
+
+    bb_routes = {
+        "config": cmd_config,
+        "chat": cmd_chat,
+        "doctor": cmd_doctor,
+        "sync": cmd_sync,
+        "guide": cmd_guide,
+        "guia": cmd_guide,
+        "new": cmd_new,
+        "crear": cmd_new,
+        "init": cmd_init,
+        "start": cmd_init,
+        "status": cmd_status,
+        "health": cmd_health,
+    }
+    handler = bb_routes.get(action)
+    if not handler:
+        fail(f"Acción BB desconocida: '{action}'")
+        info("Prueba con: melissa bb config | chat | doctor | sync | new | guide")
+        return
+
+    forwarded = argparse.Namespace(**vars(args))
+    forwarded.command = action
+    forwarded.subcommand = ""
+    forwarded.name = target_name
+    handler(forwarded)
+
+
 ROUTES = {
     # Principal
     "init": cmd_init,
@@ -7487,6 +7536,7 @@ ROUTES.update({
     "diff": cmd_diff, "compare": cmd_diff,
     # Guía de operación
     "guide": cmd_guide, "guia": cmd_guide, "ayuda": cmd_guide, "howto": cmd_guide,
+    "bb": cmd_bb, "blackboss": cmd_bb,
     # Mantenimiento (registrados aquí también por si se carga en otro orden)
     "sync": cmd_sync, "sincronizar": cmd_sync,
     "fix": cmd_fix, "reparar": cmd_fix,
@@ -7500,6 +7550,7 @@ COMMANDS.extend([
     "interactive", "alerts", "webhooks", "search", "analytics",
     "batch", "quick", "debug", "plugins", "cron", "cleanup", "diff",
     "guide", "guia", "ayuda",
+    "bb", "blackboss",
     "pair", "pairing",
     "sync", "fix", "install",
     "zero", "cero",
@@ -7568,6 +7619,14 @@ def cmd_help_extended(args):
             ("cleanup", "Limpiar logs/caché"),
             ("diff", "Comparar instancias"),
             ("guide", "📖 Guía de operación (léeme si algo no funciona)"),
+        ]),
+        ("Black Boss", [
+            ("bb config [n]", "Editar configuración desde la capa BB"),
+            ("bb chat [n]", "Abrir chat operativo"),
+            ("bb doctor", "Diagnóstico rápido"),
+            ("bb sync", "Clonar runtime exacto a todas las instancias"),
+            ("bb new", "Crear nueva instancia"),
+            ("bb guide", "Abrir guía operativa"),
         ]),
         ("Automatización", [
             ("quick", "Acciones rápidas"),

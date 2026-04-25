@@ -52,21 +52,8 @@ class ConversationEngine:
                 persona_key=persona.key,
             )
 
-        if first_turn and self._is_greeting_only(normalized):
-            return ConversationTurnResult(
-                True,
-                self._build_first_turn(persona, clinic),
-                reason="first_turn_greeting",
-                persona_key=persona.key,
-            )
-
-        if not first_turn and self._is_greeting_only(normalized):
-            return ConversationTurnResult(
-                True,
-                self._build_returning_greeting(persona, clinic, history, normalized),
-                reason="returning_greeting",
-                persona_key=persona.key,
-            )
+        if self._is_greeting_only(normalized):
+            return ConversationTurnResult(False, [], reason="llm_greeting", persona_key=persona.key)
 
         if first_turn and self._looks_like_contextual_first_turn(persona, clinic, normalized):
             return ConversationTurnResult(
@@ -82,10 +69,15 @@ class ConversationEngine:
         return (text or "").strip().lower()
 
     def _is_greeting_only(self, normalized: str) -> bool:
-        cleaned = normalized.replace("!", "").replace("?", "").replace("¡", "").replace("¿", "").strip()
+        cleaned = normalized.replace("0", "o")
+        cleaned = cleaned.replace("!", "").replace("?", "").replace("¡", "").replace("¿", "").strip()
+        cleaned = cleaned.replace(",", " ").replace(".", " ")
+        cleaned = " ".join(cleaned.split())
         return cleaned in {
             "hola",
             "hola que tal",
+            "hola como vas",
+            "hola como estas",
             "hola que mas",
             "hola buenas",
             "buenas",
@@ -95,6 +87,9 @@ class ConversationEngine:
             "buenas noches",
             "hey",
             "holi",
+            "como vas",
+            "como estas",
+            "todo bien",
             "que mas",
             "qué más",
             "que tal",
@@ -210,14 +205,12 @@ class ConversationEngine:
             else:
                 intro = "Hola. Todo bien por acá, gracias por preguntar."
         else:
-            intro = "Hola. Qué bueno tenerte por acá."
+            intro = "Hola."
 
         if recent_topic:
-            followup = (
-                f"Si quieres, retomamos lo de {recent_topic} y te lo aterrizo sin hacerte repetir todo."
-            )
+            followup = f"Si sigues con lo de {recent_topic}, dime y lo vemos."
         else:
-            followup = "Si quieres, retomamos desde donde lo dejamos y te ubico rápido."
+            followup = "Cuéntame qué quieres revisar y lo vemos."
 
         return [intro, followup]
 
@@ -277,7 +270,10 @@ class ConversationEngine:
         else:
             capabilities = "Puedo ayudarte con información, horarios, disponibilidad, valoración y orientación inicial."
 
-        cta = "Si quieres probarme en serio, escríbeme el nombre de tu negocio y te muestro cómo trabajaría contigo."
+        if clinic_name:
+            cta = "Si quieres, cuéntame qué te gustaría revisar y te ayudo desde ahí."
+        else:
+            cta = "Cuéntame qué te gustaría revisar y te ubico."
         return [intro, capabilities, cta]
 
     def _build_meta_followup(

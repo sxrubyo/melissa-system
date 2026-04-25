@@ -8922,8 +8922,10 @@ class ResponseGenerator:
             return " ||| ".join(self._build_identity_probe_bubbles(clinic, personality, user_msg))
 
         if greeting_only:
+            if cleaned:
+                return " ||| ".join(cleaned[:2])
             follow_up = self._build_first_contact_follow_up(clinic)
-            return f"{intro} ||| {follow_up}"
+            return follow_up
 
         if cleaned:
             first_content = cleaned[0].lower()
@@ -13072,6 +13074,84 @@ class MelissaUltra:
             "Si quieres probarme, escríbeme el nombre de tu negocio y te muestro cómo trabajaría contigo.",
         ]
 
+    def _build_demo_patient_clinic(self, clinic: Dict[str, Any]) -> Dict[str, Any]:
+        demo_clinic = dict(clinic or {})
+        clinic_name = str(demo_clinic.get("name") or "").strip()
+        sector = str(demo_clinic.get("sector") or "").strip().lower()
+        env_sector = str(Config.SECTOR or Config.DEMO_SECTOR or "").strip().lower()
+
+        if clinic_name.lower() == "nova":
+            demo_clinic["name"] = ""
+
+        if not sector or sector == "otro":
+            demo_clinic["sector"] = env_sector or "estetica"
+
+        if not demo_clinic.get("platform"):
+            demo_clinic["platform"] = str(Config.PLATFORM or "").strip().lower()
+        return demo_clinic
+
+    def _demo_should_use_patient_chat_path(self, user_msg: str) -> bool:
+        normalized = _normalize_conv_text(user_msg or "")
+        if not normalized:
+            return False
+
+        owner_demo_markers = (
+            "quiero probarte",
+            "me gustaria probarte",
+            "me gustaría probarte",
+            "quiero una demo",
+            "quiero demo",
+            "tengo un negocio",
+            "tengo una empresa",
+            "me lo recomendaron",
+            "me dijeron que te escribiera",
+            "me dejaron probarte",
+            "me pasaron este numero",
+            "me pasaron este número",
+            "para mi negocio",
+            "para mi empresa",
+        )
+        if any(marker in normalized for marker in owner_demo_markers):
+            return False
+
+        patient_like_markers = (
+            "hola",
+            "buenas",
+            "buenos dias",
+            "buenos días",
+            "buenas tardes",
+            "buenas noches",
+            "hey",
+            "holi",
+            "quien eres",
+            "quién eres",
+            "que eres",
+            "qué eres",
+            "botox",
+            "relleno",
+            "rellenos",
+            "laser",
+            "láser",
+            "cita",
+            "agenda",
+            "agendar",
+            "disponibilidad",
+            "precio",
+            "cuanto",
+            "cuánto",
+            "valor",
+            "tratamiento",
+            "procedimiento",
+            "consulta",
+            "quiero informacion",
+            "quiero información",
+            "quiero una cita",
+            "me quiero valorar",
+            "valoracion",
+            "valoración",
+        )
+        return any(marker in normalized for marker in patient_like_markers)
+
     def _handle_patient_off_topic(self, clinic: Dict, chat_id: str = "", user_msg: str = "") -> List[str]:
         """Maneja mensajes fuera de tema con respuestas variadas según el tipo de off-topic."""
         if owner_style_controller:
@@ -13590,35 +13670,35 @@ class MelissaUltra:
             personality = self.generator._get_default_personality(clinic)
             first_turn_token_count = len(_normalize_conv_text(text).split())
 
-            if is_first_patient_turn and (
-                self.generator._is_greeting_only(text) or first_turn_token_count <= 6
-            ):
-                reasoning = {"_metadata": {"model": "seeded_first_turn"}}
+            # 7. Razonamiento (clásico — solo si V7 no respondió)
+            reasoning = await self.reasoning.reason(
+                text, analysis, clinic, history, conv_state
+            )
+
+            # 8. Generar respuesta (clásico)
+            response = await self.generator.generate(
+                text,
+                analysis,
+                reasoning,
+                clinic,
+                patient,
+                history,
+                search_context,
+                personality=personality,
+                kb_context=kb_context,
+                chat_id=chat_id
+            )
+
+            # Saludos cortos también deben pasar por LLM. Solo si el modelo falla
+            # por completo dejamos un respaldo estructural para no dejar el chat mudo.
+            if is_first_patient_turn and not str(response or "").strip():
+                reasoning = {"_metadata": {"model": "seeded_first_turn_fallback"}}
                 response = self.generator._normalize_first_patient_turn(
                     response="",
                     clinic=clinic,
                     personality=personality,
                     user_msg=text,
                     history=history,
-                )
-            else:
-                # 7. Razonamiento (clásico — solo si V7 no respondió)
-                reasoning = await self.reasoning.reason(
-                    text, analysis, clinic, history, conv_state
-                )
-
-                # 8. Generar respuesta (clásico)
-                response = await self.generator.generate(
-                    text,
-                    analysis,
-                    reasoning,
-                    clinic,
-                    patient,
-                    history,
-                    search_context,
-                    personality=personality,
-                    kb_context=kb_context,
-                    chat_id=chat_id
                 )
             
             # 9. Extraer acciones (citas, nombres, etc.)
@@ -14190,7 +14270,12 @@ class MelissaUltra:
             "tengo un negocio", "tengo una empresa", "quiero una demo", "quiero demo",
         ]
         _text_low_pre = text.lower().strip()
-        if not business_name and not detected_cmd and any(sig in _text_low_pre for sig in _demo_identity_signals):
+        if (
+            not business_name
+            and not detected_cmd
+            and any(sig in _text_low_pre for sig in _demo_identity_signals)
+            and not self._demo_should_use_patient_chat_path(text)
+        ):
             _save("user", text)
             return _demo_identity_response(text)
 
@@ -14224,6 +14309,45 @@ class MelissaUltra:
                 "soy la recepcionista virtual — contesto WhatsApp por negocios como si fuera una persona del equipo ||| ¿de qué es tu negocio?",
             ]
             return _send(_rref.choice(_referral_responses))
+
+        if not business_name and not detected_cmd and self._demo_should_use_patient_chat_path(text):
+            demo_patient_bubbles = self._try_conversation_core(
+                clinic=self._build_demo_patient_clinic(clinic),
+                user_msg=text,
+                # El historial de onboarding/demo contamina este salto y hace que
+                # mensajes como "botox" vuelvan al flujo de "dime tu negocio".
+                # Para una prueba tipo paciente sin negocio cargado, arrancamos limpio.
+                history=[],
+                is_admin=False,
+                channel=demo_channel,
+            )
+            if not demo_patient_bubbles:
+                demo_patient_prompt = """Eres Melissa atendiendo un chat real por WhatsApp.
+Todavía no necesitas saber el nombre del negocio para responder.
+Reglas:
+- no pidas el nombre del negocio
+- no menciones demo, prueba, onboarding ni que estás dentro de un negocio
+- responde como recepcionista virtual humana y útil
+- si solo te saludan, responde breve y natural y pregunta qué quieren revisar
+- si preguntan quién eres, explica tu función sin sonar a bot
+- si preguntan por citas, tratamientos o precios, oriéntalos y haz avanzar la conversación
+- usa 1 o 2 burbujas como máximo
+"""
+                raw_demo_patient = await _llm(demo_patient_prompt, text, temp=0.72, max_t=160)
+                raw_demo_patient_low = _normalize_conv_text(raw_demo_patient or "")
+                forbidden_demo_markers = (
+                    "nombre del negocio",
+                    "como se llama tu negocio",
+                    "cómo se llama tu negocio",
+                    "dime tu negocio",
+                    "demo",
+                    "onboarding",
+                )
+                if raw_demo_patient and not any(marker in raw_demo_patient_low for marker in forbidden_demo_markers):
+                    demo_patient_bubbles = [part.strip() for part in re.split(r"\s*\|\|\|\s*", raw_demo_patient) if part.strip()]
+            if demo_patient_bubbles:
+                _save("user", text)
+                return _send(" ||| ".join(demo_patient_bubbles))
 
         # ── PASO 0: Presentación — directa, sin spam ────────────────────────────
         if not history and not business_name:

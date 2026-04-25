@@ -1,0 +1,63 @@
+{
+  "name": "melissa-ai",
+  "version": "8.0.0",
+  "description": "Open-source CLI and runtime for building Melissa AI receptionist agents on WhatsApp and Telegram.",
+  "license": "MIT",
+  "author": "Black Boss",
+  "homepage": "https://github.com/sxrubyo/melissa-system#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sxrubyo/melissa-system.git"
+  },
+  "bugs": {
+    "url": "https://github.com/sxrubyo/melissa-system/issues"
+  },
+  "bin": {
+    "melissa": "npm/melissa.js"
+  },
+  "files": [
+    "melissa",
+    "melissa.py",
+    "melissa_cli.py",
+    "melissa_brain_v10.py",
+    "melissa_domino.py",
+    "melissa_pairing.py",
+    "knowledge_base.py",
+    "search.py",
+    "brand_assets.py",
+    "nova_bridge.py",
+    "requirements.txt",
+    ".env.example",
+    "README.md",
+    "LICENSE",
+    "install.sh",
+    "melissa_core/*.py",
+    "melissa_agents/*.py",
+    "melissa_integrations/*.py",
+    "melissa_skills/*.py",
+    "personas/melissa/base/*.yaml",
+    "v7/*.py",
+    "v7/agents/*.py",
+    "v7/memory/*.py",
+    "npm/*.js"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "pack:check": "npm pack --dry-run --json"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "melissa",
+    "ai",
+    "agent",
+    "whatsapp",
+    "telegram",
+    "receptionist",
+    "cli",
+    "automation"
+  ]
+}

@@ -40,6 +40,21 @@ Si usas el CLI local:
 python3 melissa_cli.py --help
 ```
 
+## Instalación global
+
+Con npm:
+
+```bash
+npm install -g melissa-ai
+melissa --help
+```
+
+Con el instalador local:
+
+```bash
+bash install.sh --user
+```
+
 ## Tests
 
 ```bash
