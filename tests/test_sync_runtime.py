@@ -1,5 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
+import json
+import sqlite3
 import sys
 
 
@@ -111,3 +113,47 @@ def test_cmd_sync_clones_extended_runtime_entries(monkeypatch, tmp_path):
     assert (dest / "melissa_core" / "__init__.py").read_text(encoding="utf-8") == "new core"
     assert not (dest / "melissa_core" / "stale.txt").exists()
     assert (dest / ".env").read_text(encoding="utf-8") == "KEEP=1"
+
+
+def test_cmd_bb_routes_config_to_bb_config(monkeypatch):
+    called = []
+
+    monkeypatch.setattr(cli, "cmd_bb_config", lambda args: called.append(("bb", args.name, args.subcommand)))
+    monkeypatch.setattr(cli, "cmd_config", lambda args: called.append(("legacy", args.name, args.subcommand)))
+
+    cli.cmd_bb(SimpleNamespace(subcommand="config", name="nova"))
+
+    assert called == [("bb", "nova", "")]
+
+
+def test_bb_apply_persona_falls_back_to_sqlite_when_instance_is_offline(monkeypatch, tmp_path):
+    db_path = tmp_path / "melissa.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("CREATE TABLE clinic (id INTEGER PRIMARY KEY, persona_config TEXT)")
+    conn.execute("INSERT INTO clinic (id, persona_config) VALUES (1, ?)", (json.dumps({"name": "Melissa"}),))
+    conn.commit()
+    conn.close()
+
+    inst = cli.Instance(
+        name="nova",
+        label="Nova",
+        port=9999,
+        dir=str(tmp_path),
+        env={"DB_PATH": str(db_path)},
+        is_base=False,
+    )
+
+    monkeypatch.setattr(cli, "health", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(cli, "Spinner", DummySpinner)
+    monkeypatch.setattr(cli, "ok", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cli, "fail", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cli, "warn", lambda *_args, **_kwargs: None)
+
+    assert cli._bb_apply_persona(inst, {"name": "Nova", "tone_instruction": "responde corto"}, spinner_label="x")
+
+    conn = sqlite3.connect(str(db_path))
+    row = conn.execute("SELECT persona_config FROM clinic WHERE id=1").fetchone()
+    conn.close()
+    payload = json.loads(row[0])
+    assert payload["name"] == "Nova"
+    assert payload["tone_instruction"] == "responde corto"

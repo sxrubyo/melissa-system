@@ -19674,7 +19674,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Melissa v8.0",
     description="Melissa V8.0 — Agente de Recepción Hipernaturalmente Humana",
-    version="8.0.0",
+    version="8.0.1",
     lifespan=lifespan
 )
 
@@ -20074,7 +20074,7 @@ async def health():
 
     return {
         "status":         "online",
-        "version":        "8.0.0",
+        "version":        "8.0.1",
         "clinic":         clinic.get("name", "sin configurar"),
         "sector":         Config.SECTOR or clinic.get("sector", "otro"),
         "setup_done":     bool(clinic.get("setup_done")),
