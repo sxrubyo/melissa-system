@@ -177,16 +177,16 @@ class ConversationEngine:
         if persona.capabilities:
             if clinic.get("sector") == "estetica":
                 capabilities = (
-                    f"Te ayudo con {', '.join(persona.capabilities[:3])}. "
-                    "Si quieres, cuéntame qué te gustaría mejorar o qué tratamiento estás mirando."
+                    f"Estoy aquí para ayudarte con {', '.join(persona.capabilities[:3])}. "
+                    "Si quieres, cuéntame qué te interesa o qué tratamiento estás mirando."
                 )
             else:
                 capabilities = (
-                    f"Te ayudo con {', '.join(persona.capabilities[:3])}. "
+                    f"Estoy aquí para ayudarte con {', '.join(persona.capabilities[:3])}. "
                     "Cuéntame qué te gustaría revisar."
                 )
         else:
-            capabilities = "Te ayudo con información, valoración y disponibilidad."
+            capabilities = "Estoy aquí para ayudarte con información, valoración y disponibilidad"
 
         return [intro, capabilities]
 
@@ -236,7 +236,7 @@ class ConversationEngine:
         )):
             return [
                 f"Soy Melissa, la asesora virtual{f' de {clinic_name}' if clinic_name else ''}",
-                "Soy una IA hecha para orientar, responder y ayudarte a avanzar sin dejarte hablando con un libreto frío",
+                "Soy una IA hecha para orientar, responder y ayudarte a avanzar sin sonar acartonada",
             ]
         prior_identity = any(
             any(marker in self._normalize(str(msg.get("content") or "")) for marker in (
@@ -253,29 +253,28 @@ class ConversationEngine:
         if prior_identity:
             return [
                 f"Sigo siendo Melissa, la asesora virtual{f' de {clinic_name}' if clinic_name else ''}",
-                "Sigo siendo una IA hecha para orientarte bien, sostener la conversación y ayudarte a avanzar sin respuestas de plantilla",
+                "Sigo siendo una IA hecha para orientarte bien, sostener la conversación y ayudarte sin respuestas de plantilla",
             ]
 
         intro = self._choose(
             persona.identity_probe_variants or [
-                f"Soy {persona.identity}, la asesora virtual{f' de {clinic_name}' if clinic_name else ''}, una IA hecha para orientarte y responderte desde acá",
-                f"Soy {persona.identity}, la asesora virtual{f' de {clinic_name}' if clinic_name else ''}. Soy una IA pensada para resolver dudas y ayudarte a avanzar sin enredos",
-                f"Soy {persona.identity}, la asesora virtual{f' de {clinic_name}' if clinic_name else ''}. Soy una IA para que este chat se sienta claro, útil y bien llevado",
+                f"Soy {persona.identity}, la asesora virtual{f' de {clinic_name}' if clinic_name else ''}. También soy la IA que sostiene este chat para orientarte bien",
+                f"Soy {persona.identity}, la asesora virtual{f' de {clinic_name}' if clinic_name else ''}. Soy una IA hecha para resolver dudas y ayudarte a avanzar sin enredos",
+                f"Soy {persona.identity}, la asesora virtual{f' de {clinic_name}' if clinic_name else ''}. Soy una IA pensada para que este chat se sienta claro, útil y bien llevado",
             ],
             normalized,
         )
         intro = self._render_persona_line(intro, persona, clinic_name)
         if persona.capabilities:
             capabilities = (
-                "Puedo ayudarte con "
+                "Te puedo ayudar con "
                 + ", ".join(persona.capabilities[:3])
-                + ""
             )
         else:
-            capabilities = "Puedo ayudarte con información, horarios, disponibilidad, valoración y orientación inicial"
+            capabilities = "Te puedo ayudar con información, horarios, disponibilidad, valoración y orientación inicial"
 
         if clinic_name:
-            cta = "Si quieres, cuéntame qué te gustaría revisar y te ayudo desde ahí"
+            cta = "Si quieres, cuéntame qué te gustaría revisar y lo vemos desde ahí"
         else:
             cta = "Cuéntame qué te gustaría revisar y te ubico"
         return [intro, capabilities, cta]

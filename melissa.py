@@ -3042,6 +3042,7 @@ class Config:
     DEMO_BUSINESS_NAME = os.getenv("DEMO_BUSINESS_NAME", "Clínica Demo")
     DEMO_SECTOR        = os.getenv("DEMO_SECTOR", "estetica")
     DEMO_SESSION_TTL   = int(os.getenv("DEMO_SESSION_TTL", "1800"))  # 30 min por persona
+    GREETING_ONLY_IDLE_SECONDS = int(os.getenv("GREETING_ONLY_IDLE_SECONDS", "300"))
 
     # ── V8.0 — Gestión dinámica de modelos ─────────────────────────────────────
     # El admin puede cambiar el modelo en caliente con /modelo
@@ -5804,16 +5805,45 @@ def _first_contact_intro(clinic: Dict[str, Any], agent_name: str = "Melissa") ->
     return f"Hola, soy {agent_name}, la asesora virtual"
 
 
+def _first_contact_welcome_line(clinic: Dict[str, Any], user_msg: str) -> str:
+    clinic_name = (clinic.get("name") or "").strip()
+    normalized = _normalize_conv_text(user_msg or "")
+    if "buenas tardes" in normalized:
+        opening = "Hola, buenas tardes"
+    elif "buenos dias" in normalized:
+        opening = "Hola, buenos días"
+    elif "buenas noches" in normalized:
+        opening = "Hola, buenas noches"
+    elif "buenas" in normalized:
+        opening = "Hola, buenas"
+    else:
+        opening = "Hola"
+    if clinic_name:
+        return f"{opening}, bienvenido a {clinic_name}"
+    return f"{opening}, bienvenido"
+
+
+def _first_contact_identity_line(clinic: Dict[str, Any], agent_name: str = "Melissa") -> str:
+    clinic_name = (clinic.get("name") or "").strip()
+    if clinic_name:
+        return f"Soy {agent_name}, la asesora virtual de {clinic_name}"
+    return f"Soy {agent_name}, la asesora virtual"
+
+
+def _first_contact_question_line() -> str:
+    return "Cómo podemos ayudarte?"
+
+
 def _first_contact_followup(clinic: Dict[str, Any]) -> str:
     services = clinic.get("services") if isinstance(clinic.get("services"), list) else []
     if services:
         lead_services = ", ".join(str(service).strip() for service in services[:3] if str(service).strip())
         if lead_services:
             return (
-                f"Te ayudo con citas, horarios y servicios como {lead_services}. "
+                f"Estoy aquí para ayudarte con citas, horarios y servicios como {lead_services}. "
                 "Qué te gustaría revisar?"
             )
-    return "Te ayudo con citas, horarios o el servicio que necesites. Qué te gustaría revisar?"
+    return "Estoy aquí para ayudarte con citas, horarios o el servicio que necesites. Qué te gustaría revisar?"
 
 
 def _clean_first_contact_part(text: str) -> str:
@@ -5827,6 +5857,77 @@ def _clean_first_contact_part(text: str) -> str:
     part = re.sub(r"^(soy\s+melissa[^.?!]*[.?!]?\s*)", "", part, flags=re.IGNORECASE).strip()
     part = re.sub(r"^(te\s+habla\s+melissa[^.?!]*[.?!]?\s*)", "", part, flags=re.IGNORECASE).strip()
     return part
+
+
+_ADMIN_CONVERSATION_ORDINALS = {
+    "1": 1,
+    "uno": 1,
+    "primero": 1,
+    "primera": 1,
+    "2": 2,
+    "dos": 2,
+    "segundo": 2,
+    "segunda": 2,
+    "3": 3,
+    "tres": 3,
+    "tercero": 3,
+    "tercera": 3,
+    "4": 4,
+    "cuatro": 4,
+    "cuarto": 4,
+    "cuarta": 4,
+    "5": 5,
+    "cinco": 5,
+    "quinto": 5,
+    "quinta": 5,
+    "6": 6,
+    "seis": 6,
+    "sexto": 6,
+    "sexta": 6,
+}
+
+
+def _wants_recent_conversation_browser(text: str) -> bool:
+    normalized = _normalize_conv_text(text)
+    if not normalized:
+        return False
+    has_recent = any(
+        token in normalized
+        for token in ("ultimas", "ultimos", "recientes", "conversaciones", "chats", "mensajes")
+    )
+    has_subject = any(
+        token in normalized
+        for token in ("convers", "chat", "paciente", "persona", "cliente")
+    )
+    return has_recent and has_subject
+
+
+def _extract_conversation_selection(text: str) -> Optional[int]:
+    normalized = _normalize_conv_text(text)
+    if not normalized:
+        return None
+    match = re.search(r"\bver\s+(\d{1,2})\b", normalized)
+    if match:
+        return int(match.group(1))
+    for token, idx in _ADMIN_CONVERSATION_ORDINALS.items():
+        if re.search(rf"\b{re.escape(token)}\b", normalized):
+            return idx
+    return None
+
+
+def _wants_all_messages(text: str) -> bool:
+    normalized = _normalize_conv_text(text)
+    return any(
+        phrase in normalized
+        for phrase in (
+            "ver todo",
+            "todos los mensajes",
+            "toda la conversacion",
+            "toda la conversación",
+            "completa",
+            "completo",
+        )
+    )
 
 
 def _is_low_quality_first_contact_part(text: str) -> bool:
@@ -8757,19 +8858,19 @@ class ResponseGenerator:
             if lead_services:
                 if is_estetica:
                     return (
-                        f"Te ayudo con {lead_services}, valoración y disponibilidad. "
-                        "Si quieres, cuéntame qué te gustaría mejorar o qué tratamiento estás mirando."
+                        f"Estoy aquí para ayudarte con {lead_services}, valoración y disponibilidad. "
+                        "Si quieres, cuéntame qué te interesa o qué tratamiento estás mirando."
                     )
                 return (
-                    f"Te ayudo con información, valoración y disponibilidad de servicios como {lead_services}. "
+                    f"Estoy aquí para ayudarte con información, valoración y disponibilidad de servicios como {lead_services}. "
                     "Cuéntame qué te gustaría revisar."
                 )
         if is_estetica:
             return (
-                "Te ayudo con tratamientos, valoración y disponibilidad. "
-                "Si quieres, cuéntame qué te gustaría mejorar o qué tratamiento estás mirando."
+                "Estoy aquí para ayudarte con tratamientos, valoración y disponibilidad. "
+                "Si quieres, cuéntame qué te interesa o qué tratamiento estás mirando."
             )
-        return "Te ayudo con información, valoración y disponibilidad. Cuéntame qué te gustaría revisar."
+        return "Estoy aquí para ayudarte con información, valoración y disponibilidad. Cuéntame qué te gustaría revisar."
 
     def _is_low_quality_first_turn_bubble(self, text: str) -> bool:
         current = (text or "").strip()
@@ -8827,9 +8928,9 @@ class ResponseGenerator:
         normalized = _normalize_conv_text(user_msg or "")
 
         intro_variants = [
-            f"Soy {agent_name}, la asesora virtual{f' de {clinic_name}' if clinic_name else ''}, una IA hecha para orientarte bien por este chat",
+            f"Soy {agent_name}, la asesora virtual{f' de {clinic_name}' if clinic_name else ''}. También soy la IA que acompaña este chat para orientarte bien",
             f"Soy {agent_name}, la asesora virtual{f' de {clinic_name}' if clinic_name else ''}. Soy una IA pensada para responderte claro y ayudarte a avanzar",
-            f"Soy {agent_name}, la asesora virtual que lleva este chat{f' de {clinic_name}' if clinic_name else ''}. Soy una IA para ubicarte bien y acompañarte",
+            f"Soy {agent_name}, la asesora virtual{f' de {clinic_name}' if clinic_name else ''}. Soy una IA pensada para que esto se sienta natural y bien llevado",
         ]
         intro = intro_variants[len(normalized) % len(intro_variants)]
 
@@ -8837,23 +8938,20 @@ class ResponseGenerator:
         lead_services = [str(service).strip() for service in services[:3] if str(service).strip()]
         if lead_services:
             capabilities = (
-                "Puedo ayudarte con información, horarios, disponibilidad, valoración y orientación inicial"
+                "Te puedo ayudar con información, horarios, disponibilidad, valoración y orientación inicial"
                 f" sobre servicios como {', '.join(lead_services)}"
             )
         else:
             capabilities = (
-                "Puedo ayudarte con información, horarios, disponibilidad, valoración y orientación inicial"
+                "Te puedo ayudar con información, horarios, disponibilidad, valoración y orientación inicial"
                 " para que el primer contacto se sienta claro, útil y bien llevado"
             )
 
-        cta = ""
+        cta = "Si quieres, cuéntame qué te gustaría revisar y lo vemos"
         if any(token in normalized for token in ("probarte", "demo", "negocio", "empresa", "funcionas", "eres")):
             cta = "Si quieres probarme en serio, escríbeme el nombre de tu negocio y te muestro cómo trabajaría contigo"
 
-        bubbles = [intro, capabilities]
-        if cta:
-            bubbles.append(cta)
-        return bubbles
+        return [intro, capabilities, cta]
 
     def _extract_message_topic(self, user_msg: str, clinic: Dict) -> str:
         normalized = _normalize_conv_text(user_msg or "")
@@ -9211,7 +9309,8 @@ class ResponseGenerator:
 
         # Identidad core — en prosa, sin headers
         parts.append(
-            f"Eres {agent_name}, una persona real del equipo de {clinic_name}. "
+            f"Eres {agent_name}, la asesora virtual de {clinic_name}. "
+            f"Eres una IA y no finges ser humana si te lo preguntan; lo dices con naturalidad y sin sonar robótica. "
             f"{negocio_bloque} "
             f"Recibes mensajes por WhatsApp de personas en Colombia. "
             f"Hablas exactamente como habla una recepcionista colombiana real — "
@@ -9338,7 +9437,7 @@ class ResponseGenerator:
         if user_turns <= 1:
             first_turn_block = (
                 "PRIMER CONTACTO REAL:\n"
-                "- preséntate corto una sola vez como Melissa o con el nombre configurado, del equipo del negocio\n"
+                "- preséntate corto una sola vez como Melissa, la asesora virtual del negocio\n"
                 "- si la persona ya dijo el motivo, responde desde eso de una vez\n"
                 "- no digas 'en qué te puedo ayudar' ni 'cómo puedo ayudarte'\n"
                 "- no abras con 'oye', 'mira' ni 'qué te trae por acá'\n"
@@ -14413,7 +14512,8 @@ Todavía no necesitas saber el nombre del negocio para responder.
 Reglas:
 - no pidas el nombre del negocio
 - no menciones demo, prueba, onboarding ni que estás dentro de un negocio
-- responde como recepcionista virtual humana y útil
+- responde como asesora virtual cálida y útil
+- si te preguntan quién eres, admite con naturalidad que eres una IA que atiende el chat
 - si solo te saludan, responde breve y natural y pregunta qué quieren revisar
 - si preguntan quién eres, explica tu función sin sonar a bot
 - si preguntan por citas, tratamientos o precios, oriéntalos y haz avanzar la conversación
@@ -16333,6 +16433,110 @@ Si un campo no aplica o no se encontro, usa "" o []. Solo JSON, sin texto extra.
             "Ej: /chat 1234567890\n\n"
             "Para dar feedback sobre una conversación:\n"
             "Escríbeme después de ver la conversación."
+        )
+        return ["\n".join(lines)]
+
+    async def _admin_show_recent_conversation_browser(self, admin_chat_id: str, limit: int = 6) -> List[str]:
+        """
+        Vista resumida para admins no técnicos.
+        Muestra las últimas conversaciones y deja contexto para abrir una por número.
+        """
+        chats = db.get_recent_patient_chats(limit=limit)
+        if not chats:
+            return ["Melissa no ha tenido conversaciones con pacientes todavía."]
+
+        self._admin_pending[admin_chat_id] = {
+            "action": "conversation_browser",
+            "items": chats,
+            "selected_chat_id": None,
+        }
+
+        lines = [f"Últimas {len(chats)} conversaciones:\n"]
+        for idx, chat in enumerate(chats, 1):
+            name = (chat.get("name") or "Sin nombre").strip()
+            chat_id = str(chat.get("chat_id") or "").strip()
+            count = int(chat.get("message_count") or 0)
+            last_msg = (chat.get("last_user_msg") or "").strip()
+            if len(last_msg) > 60:
+                last_msg = last_msg[:57].rstrip() + "..."
+            last_ts = str(chat.get("last_message") or "").replace("T", " ")[:16]
+            lines.append(
+                f"{idx}. {name} ({chat_id})\n"
+                f"   {count} mensajes · {last_ts}\n"
+                f"   Último: {last_msg or 'sin texto'}"
+            )
+
+        lines.extend(
+            [
+                "",
+                "Dime por ejemplo:",
+                "  ver 1",
+                "  muéstrame la primera",
+                "  quiero ver todos los mensajes del primero",
+            ]
+        )
+        return ["\n".join(lines)]
+
+    async def _admin_show_patient_chat_preview(
+        self,
+        patient_chat_id: str,
+        *,
+        admin_chat_id: str = "",
+        limit: int = 10,
+        show_all: bool = False,
+    ) -> List[str]:
+        """
+        Muestra un preview corto por defecto y la conversación completa si el admin lo pide.
+        """
+        fetch_limit = 500 if show_all else limit
+        msgs = db.get_patient_conversation(patient_chat_id, limit=fetch_limit)
+        if not msgs:
+            return [f"No encontré conversación para el ID: {patient_chat_id}"]
+
+        patient_name = ""
+        try:
+            conn_factory = getattr(db, "_conn", None)
+            if callable(conn_factory):
+                with conn_factory() as c:
+                    row = c.execute(
+                        "SELECT name FROM patients WHERE chat_id=?",
+                        (patient_chat_id,),
+                    ).fetchone()
+                    if row:
+                        patient_name = (row["name"] or "").strip()
+        except Exception:
+            patient_name = ""
+
+        if admin_chat_id:
+            pending = dict(self._admin_pending.get(admin_chat_id, {}))
+            pending["action"] = "conversation_browser"
+            pending["selected_chat_id"] = patient_chat_id
+            self._admin_pending[admin_chat_id] = pending
+
+        self._last_reviewed_chat = patient_chat_id
+
+        label = patient_name or patient_chat_id
+        visible = msgs if show_all else msgs[-limit:]
+        header = (
+            f"Conversación completa con {label}"
+            if show_all
+            else f"Últimos {len(visible)} mensajes con {label}"
+        )
+
+        lines = [header, "─" * 40]
+        for msg in visible:
+            role_label = "Paciente" if msg.get("role") == "user" else "Melissa"
+            ts = str(msg.get("ts") or "").replace("T", " ")[:16]
+            content = str(msg.get("content") or "").strip()
+            lines.append(f"[{ts}] {role_label}: {content}")
+
+        lines.extend(
+            [
+                "",
+                "Si quieres más, dime:",
+                "  ver todo",
+                "  enséñame todos los mensajes",
+            ]
         )
         return ["\n".join(lines)]
 
@@ -19124,6 +19328,7 @@ No hables como dashboard, soporte técnico ni consola."""
         try:
             clinic = db.get_clinic()
             is_setup = not clinic.get("setup_done")
+            history = db.get_history(chat_id, limit=3)
             
             # Demo mode: siempre rápido para no perder al prospecto
             if Config.DEMO_MODE:
@@ -19140,8 +19345,10 @@ No hables como dashboard, soporte técnico ni consola."""
                     return round(random.uniform(3.0, 7.0), 1)
                 return round(random.uniform(5.0, 11.0), 1)
             
+            if not history and _is_greeting_only(text):
+                return float(Config.GREETING_ONLY_IDLE_SECONDS)
+
             # Ver si Melissa acaba de hacer una pregunta al usuario
-            history = db.get_history(chat_id, limit=3)
             last_bot = next(
                 (m for m in reversed(history) if m["role"] == "assistant"), None
             )
@@ -19158,6 +19365,7 @@ No hables como dashboard, soporte técnico ni consola."""
         except Exception:
             is_setup = False
             bot_asked = False
+            history = []
         
         # ── Rango base segun longitud del texto ───────────────────────────────
         # Muy corto: "si", "no", "ok", "dale", numero, nombre
@@ -21727,7 +21935,7 @@ class ConversationSimulator:
         if is_first_turn:
             first_turn_block = """
 PRIMER TURNO:
-- preséntate corto como Melissa, del equipo del negocio
+- preséntate corto como Melissa, la asesora virtual del negocio
 - no abras con "hola"
 - no abras con "entiendo"
 - no abras con "oye" ni "qué te trae por acá"
@@ -21736,7 +21944,8 @@ PRIMER TURNO:
 - haz una sola pregunta útil
 - máximo 2 burbujas cortas
 """
-        system = f"""Eres Melissa, recepcionista de {clinic.get('name','una clínica')}.
+        system = f"""Eres Melissa, la asesora virtual de {clinic.get('name','una clínica')}.
+Eres una IA y si el cliente te lo pregunta lo dices con naturalidad, sin fingir ser humana.
 Sector: {sector}. Responde como lo harías con un cliente real por WhatsApp.
 Corto, natural, colombiano. Sin frases de bot. Máximo 2 burbujas con |||.
 Si la persona ya dijo lo que quiere, no digas 'hola, en qué te ayudo', no abras con 'entiendo perfecto' y no valides por validar.
@@ -21746,7 +21955,7 @@ Si mezcla una rareza con una duda real del servicio, responde la duda real y dej
 {first_turn_block}
 Ejemplo correcto de primer turno:
 cliente: hola buenas, quería preguntar por botox pero tengo mucho miedo de quedar exagerada
-Melissa: Hola, Melissa por acá, del equipo de la clínica ||| qué es lo que más te preocupa, que se note demasiado o quedar tiesa
+Melissa: Hola, soy Melissa, la asesora virtual de la clínica ||| qué es lo que más te preocupa, que se note demasiado o quedar tiesa
 {addon}"""
 
         msgs = [{"role": "system", "content": system}]
@@ -25949,9 +26158,11 @@ class OwnerStyleController:
                 "Si el admin pide tuteo, úsalo natural, sostenido y colombiano, sin mezclarlo con usted.",
             ]
         if not bucket.get("greeting_template"):
-            bucket["greeting_template"] = "Hola, soy Melissa, la asesora virtual de {clinic_name}"
+            bucket["greeting_template"] = "{welcome_line}"
         if not bucket.get("second_bubble_template"):
-            bucket["second_bubble_template"] = "Te ayudo con información, valoración y disponibilidad"
+            bucket["second_bubble_template"] = "{welcome_identity}"
+        if not bucket.get("third_bubble_template"):
+            bucket["third_bubble_template"] = "{welcome_question}"
         if not bucket.get("max_bubbles"):
             bucket["max_bubbles"] = 3
         return bucket
@@ -26488,7 +26699,15 @@ class OwnerStyleController:
             output = re.sub(pattern, repl, output, flags=re.IGNORECASE)
         return output
 
-    def _render_template(self, template: str, *, is_admin: bool, chat_id: str = "", clinic: Optional[Dict[str, Any]] = None) -> str:
+    def _render_template(
+        self,
+        template: str,
+        *,
+        is_admin: bool,
+        chat_id: str = "",
+        clinic: Optional[Dict[str, Any]] = None,
+        user_msg: str = "",
+    ) -> str:
         raw = (template or "").strip()
         if not raw:
             return ""
@@ -26503,8 +26722,18 @@ class OwnerStyleController:
         clinic_name = ""
         if isinstance(clinic, dict):
             clinic_name = str(clinic.get("name") or "").strip()
+        welcome_line = _first_contact_welcome_line(clinic or {}, user_msg)
+        welcome_identity = _first_contact_identity_line(clinic or {})
+        welcome_question = _first_contact_question_line()
         try:
-            return raw.format(admin_name=admin_name, clinic_name=clinic_name, role="administrador" if is_admin else "cliente").strip()
+            return raw.format(
+                admin_name=admin_name,
+                clinic_name=clinic_name,
+                role="administrador" if is_admin else "cliente",
+                welcome_line=welcome_line,
+                welcome_identity=welcome_identity,
+                welcome_question=welcome_question,
+            ).strip()
         except Exception:
             return raw
 
@@ -26567,6 +26796,7 @@ class OwnerStyleController:
                 is_admin=is_admin,
                 chat_id=chat_id,
                 clinic=clinic,
+                user_msg=user_msg,
             )
             bubbles = self._apply_bubble_template(bubbles, greeting_template, 0)
         if first_turn and light_open and merged.get("second_bubble_template"):
@@ -26575,6 +26805,7 @@ class OwnerStyleController:
                 is_admin=is_admin,
                 chat_id=chat_id,
                 clinic=clinic,
+                user_msg=user_msg,
             )
             bubbles = self._apply_bubble_template(bubbles, second_template, 1)
         if first_turn and light_open and merged.get("third_bubble_template"):
@@ -26583,6 +26814,7 @@ class OwnerStyleController:
                 is_admin=is_admin,
                 chat_id=chat_id,
                 clinic=clinic,
+                user_msg=user_msg,
             )
             bubbles = self._apply_bubble_template(bubbles, third_template, 2)
 
@@ -26620,6 +26852,7 @@ class OwnerStyleController:
                 is_admin=is_admin,
                 chat_id=chat_id,
                 clinic=clinic,
+                user_msg=user_msg,
             )
             if closing_template:
                 if cleaned_bubbles:
@@ -28088,6 +28321,33 @@ def _patch_admin_dispatcher_trainer():
                 admin_client_mode.add_turn(chat_id, text, response_text)
 
             return result
+
+        pending_browser = self._admin_pending.get(chat_id, {}) if hasattr(self, "_admin_pending") else {}
+        if cmd in ("/ultimas", "/últimas", "/conversaciones", "/conversaciones recientes"):
+            return await self._admin_show_recent_conversation_browser(chat_id, limit=6)
+
+        if _wants_recent_conversation_browser(text_low):
+            return await self._admin_show_recent_conversation_browser(chat_id, limit=6)
+
+        if pending_browser.get("action") == "conversation_browser" and _wants_all_messages(text_low):
+            selected_chat_id = pending_browser.get("selected_chat_id")
+            if selected_chat_id:
+                return await self._admin_show_patient_chat_preview(
+                    selected_chat_id,
+                    admin_chat_id=chat_id,
+                    show_all=True,
+                )
+
+        selection_idx = _extract_conversation_selection(text_low)
+        if selection_idx and pending_browser.get("action") == "conversation_browser":
+            items = pending_browser.get("items") or []
+            if 1 <= selection_idx <= len(items):
+                selected = items[selection_idx - 1]
+                return await self._admin_show_patient_chat_preview(
+                    str(selected.get("chat_id") or ""),
+                    admin_chat_id=chat_id,
+                    limit=10,
+                )
 
         # ── Comandos del trainer (modo admin normal) ───────────────────────────
         if cmd == "/skills" or cmd == "/skill":

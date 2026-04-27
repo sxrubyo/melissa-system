@@ -342,3 +342,93 @@ def test_owner_style_controller_can_keep_lowercase_start_when_requested() -> Non
 
     first_bubble = rendered.split("|||")[0].strip()
     assert first_bubble.startswith("hola")
+
+
+def test_calc_smart_wait_holds_first_contact_greeting_for_five_minutes() -> None:
+    module = load_melissa_module()
+    module.Config.DEMO_MODE = False
+    module.Config.GREETING_ONLY_IDLE_SECONDS = 300
+    module.db = types.SimpleNamespace(
+        get_clinic=lambda: {"setup_done": 1},
+        get_history=lambda chat_id, limit=None: [],
+    )
+
+    runtime = module.MelissaUltra.__new__(module.MelissaUltra)
+
+    wait = runtime._calc_smart_wait("7000001004", "buenas tardes")
+
+    assert wait == 300.0
+
+
+def test_owner_style_controller_renders_three_bubble_welcome_for_pure_greeting() -> None:
+    module = load_melissa_module()
+    controller = module.OwnerStyleController()
+    controller._loaded = True
+
+    rendered = controller.enforce_output(
+        "respuesta provisional",
+        is_admin=False,
+        first_turn=True,
+        chat_id="",
+        clinic={"name": "la clínica"},
+        user_msg="buenas tardes",
+    )
+
+    bubbles = [part.strip() for part in rendered.split("|||") if part.strip()]
+    assert len(bubbles) == 3
+    assert bubbles[0].lower().startswith("hola, buenas tardes")
+    assert "bienvenido a la clínica" in bubbles[0].lower() or "bienvenido a la clinica" in bubbles[0].lower()
+    assert "asesora virtual" in bubbles[1].lower()
+    assert bubbles[2] == "Cómo podemos ayudarte?"
+
+
+def test_admin_recent_conversation_browser_shows_six_and_stores_context() -> None:
+    module = load_melissa_module()
+    runtime = module.MelissaUltra.__new__(module.MelissaUltra)
+    runtime._admin_pending = {}
+
+    module.db = types.SimpleNamespace(
+        get_recent_patient_chats=lambda limit=10: [
+            {
+                "chat_id": f"57300000000{i}",
+                "name": f"Paciente {i}",
+                "message_count": 10 + i,
+                "last_message": "2026-04-27T04:30:00",
+                "last_user_msg": f"mensaje {i}",
+            }
+            for i in range(1, 9)
+        ][:limit]
+    )
+
+    result = asyncio.run(runtime._admin_show_recent_conversation_browser("admin-1", limit=6))
+
+    text = result[0]
+    assert "Últimas 6 conversaciones" in text
+    assert "Paciente 1" in text
+    assert "Paciente 6" in text
+    assert "Paciente 7" not in text
+    assert runtime._admin_pending["admin-1"]["action"] == "conversation_browser"
+    assert len(runtime._admin_pending["admin-1"]["items"]) == 6
+
+
+def test_admin_patient_chat_preview_defaults_to_last_ten_messages() -> None:
+    module = load_melissa_module()
+    runtime = module.MelissaUltra.__new__(module.MelissaUltra)
+    runtime._admin_pending = {}
+
+    module.db = types.SimpleNamespace(
+        get_patient_conversation=lambda chat_id, limit=30: [
+            {"role": "user" if i % 2 == 0 else "assistant", "ts": f"2026-04-27T04:{i:02d}:00", "content": f"mensaje {i}"}
+            for i in range(1, 15)
+        ][-limit:],
+        _conn=None,
+    )
+
+    result = asyncio.run(runtime._admin_show_patient_chat_preview("573000000001", admin_chat_id="admin-1"))
+
+    text = result[0]
+    assert "Últimos 10 mensajes" in text
+    assert "mensaje 5" in text
+    assert "mensaje 6" in text
+    assert "mensaje 14" in text
+    assert runtime._admin_pending["admin-1"]["selected_chat_id"] == "573000000001"
