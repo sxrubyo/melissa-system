@@ -19729,14 +19729,21 @@ async def lifespan(app: FastAPI):
         except Exception as _e:
             log.warning(f"[startup] {_lbl} error: {_e}")
 
-    if Config.TELEGRAM_SHARED_ROUTER and Config.BASE_URL and Config.TELEGRAM_TOKEN:
+    telegram_mode = _telegram_webhook_mode()
+    if telegram_mode == "shared":
         await set_shared_telegram_webhook()
+    elif telegram_mode == "direct":
+        if Config.TELEGRAM_SHARED and Config.PLATFORM != "telegram":
+            log.info("[telegram] shared activado sin router — usando webhook directo en esta instancia")
+        if Config.PLATFORM == "telegram" and Config.TELEGRAM_SHARED:
+            log.info("Telegram shared mode activo sin router — usando webhook directo para no dejar el bot mudo")
+        await set_webhook()
 
     if Config.PLATFORM == "telegram" and Config.BASE_URL and Config.TELEGRAM_TOKEN:
-        if Config.TELEGRAM_SHARED:
+        if Config.TELEGRAM_SHARED and Config.TELEGRAM_SHARED_ROUTER:
             log.info("Telegram shared mode activo — esta instancia no registra webhook propio")
         else:
-            await set_webhook()
+            log.info("[telegram] webhook directo activo")
     elif Config.PLATFORM == "whatsapp_cloud":
         log.info("WhatsApp Cloud API mode — registra el webhook manualmente en Meta Business Manager")
         log.info(f"URL del webhook: {Config.BASE_URL}/webhook/{Config.WEBHOOK_SECRET}")
@@ -19782,9 +19789,6 @@ app.add_middleware(
 
 async def set_webhook():
     """Configura el webhook de Telegram."""
-    if Config.TELEGRAM_SHARED:
-        log.info("[telegram_shared] instancia compartida — no mueve el webhook del bot")
-        return
     url = f"{Config.BASE_URL}/webhook/{Config.WEBHOOK_SECRET}"
     
     async with httpx.AsyncClient() as client:
@@ -19816,6 +19820,14 @@ async def set_shared_telegram_webhook():
         data = r.json()
         status = "OK" if data.get("ok") else "ERROR"
         log.info(f"[telegram_shared] Webhook {status}: {url}")
+
+
+def _telegram_webhook_mode() -> str:
+    if not Config.BASE_URL or not Config.TELEGRAM_TOKEN:
+        return "disabled"
+    if Config.TELEGRAM_SHARED_ROUTER:
+        return "shared"
+    return "direct"
 
 
 async def _forward_shared_telegram_update(target: Dict[str, Any], body: Dict[str, Any]) -> Dict[str, Any]:
@@ -20117,6 +20129,44 @@ async def wa_verify(secret: str, request: Request):
 
 
 # ─── API Endpoints ──────────────────────────────────────────────────────────────
+
+@app.get("/telegram/status")
+async def telegram_status():
+    status = {
+        "enabled": bool(Config.TELEGRAM_TOKEN),
+        "platform": Config.PLATFORM,
+        "shared": Config.TELEGRAM_SHARED,
+        "shared_router": Config.TELEGRAM_SHARED_ROUTER,
+        "mode": _telegram_webhook_mode(),
+        "base_url": Config.BASE_URL,
+        "webhook_secret": Config.WEBHOOK_SECRET,
+    }
+    if not Config.TELEGRAM_TOKEN:
+        status["ok"] = False
+        status["reason"] = "missing_token"
+        return status
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            me_resp = await client.get(f"https://api.telegram.org/bot{Config.TELEGRAM_TOKEN}/getMe")
+            webhook_resp = await client.get(f"https://api.telegram.org/bot{Config.TELEGRAM_TOKEN}/getWebhookInfo")
+        me = me_resp.json().get("result", {}) if me_resp.status_code < 500 else {}
+        webhook = webhook_resp.json().get("result", {}) if webhook_resp.status_code < 500 else {}
+        status.update(
+            {
+                "ok": True,
+                "bot_username": me.get("username", ""),
+                "bot_name": me.get("first_name", ""),
+                "webhook_url": webhook.get("url", ""),
+                "pending_update_count": webhook.get("pending_update_count", 0),
+                "last_error_message": webhook.get("last_error_message", ""),
+                "last_error_date": webhook.get("last_error_date"),
+            }
+        )
+    except Exception as exc:
+        status["ok"] = False
+        status["reason"] = str(exc)[:160]
+    return status
 
 @app.get("/health")
 async def health():
