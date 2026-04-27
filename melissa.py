@@ -4145,6 +4145,7 @@ class AntiRobotFilter:
         # Aperturas de robot
         "hola, soy melissa", "hola, mi nombre es melissa",
         "soy tu asistente virtual", "soy una asistente virtual",
+        "la asistente virtual", "la recepcionista virtual",
         "como asistente", "como tu asistente",
         # Frases de relleno que agregan cero valor
         "claro que sí", "por supuesto que sí",
@@ -4210,6 +4211,8 @@ class AntiRobotFilter:
         r"te\s+brindo\s+(la\s+)?información",
         r"te\s+proporciono",
         r"te\s+facilito",
+        r"(?:la\s+)?asistente\s+virtual",
+        r"(?:la\s+)?recepcionista\s+virtual",
         r"¡(hola|buenas|bienvenid)!\s*¿en qué",          # Apertura doble exclamación+pregunta
         r"^\s*¡",                                          # Apertura con ¡
         r"sería\s+(un\s+)?placer",
@@ -5808,9 +5811,48 @@ def _first_contact_followup(clinic: Dict[str, Any]) -> str:
         if lead_services:
             return (
                 f"Estoy pendiente para ayudarte con citas, horarios o con servicios como {lead_services}. "
-                "Qué te gustaría revisar hoy?"
+                "Qué te gustaría revisar?"
             )
-    return "Estoy pendiente para ayudarte con citas, horarios o el servicio que necesites. Qué te gustaría revisar hoy?"
+    return "Estoy pendiente para ayudarte con citas, horarios o el servicio que necesites. Qué te gustaría revisar?"
+
+
+def _clean_first_contact_part(text: str) -> str:
+    part = _strip_leading_greeting(text)
+    part = re.sub(
+        r"^(melissa\s+por\s+ac[aá]\s*,?\s*del\s+equipo\s+de\s+[^.?!]+[.?!]?\s*)",
+        "",
+        part,
+        flags=re.IGNORECASE,
+    ).strip()
+    part = re.sub(r"^(soy\s+melissa[^.?!]*[.?!]?\s*)", "", part, flags=re.IGNORECASE).strip()
+    part = re.sub(r"^(te\s+habla\s+melissa[^.?!]*[.?!]?\s*)", "", part, flags=re.IGNORECASE).strip()
+    return part
+
+
+def _is_low_quality_first_contact_part(text: str) -> bool:
+    current = (text or "").strip()
+    if not current:
+        return True
+    normalized = _normalize_conv_text(current)
+    if not normalized:
+        return True
+    if looks_fragmented_reply(current):
+        return True
+    if len(normalized.split()) <= 2:
+        return True
+    if any(
+        marker in normalized
+        for marker in (
+            "soy melissa",
+            "te habla melissa",
+            "asistente virtual",
+            "recepcionista virtual",
+            "tu hoy",
+            "hoy",
+        )
+    ):
+        return True
+    return normalized in {"hola", "hoy", "tu hoy", "soy melissa tu hoy"}
 
 
 def _normalize_first_contact_response(
@@ -5821,21 +5863,24 @@ def _normalize_first_contact_response(
 ) -> str:
     intro = _first_contact_intro(clinic, agent_name=agent_name)
     parts = [part.strip() for part in (response or "").split("|||") if part.strip()]
-    parts = [_strip_leading_greeting(part) or part.strip() for part in parts]
+    parts = [_clean_first_contact_part(part) for part in parts]
     parts = [part for part in parts if part]
+    intro_norm = _normalize_conv_text(intro)
+    parts = [part for part in parts if _normalize_conv_text(part) != intro_norm]
 
     if _is_greeting_only(user_msg):
-        followup = parts[0] if parts else ""
-        if len(_normalize_conv_text(followup).split()) < 4:
+        followup = next((part for part in parts if not _is_low_quality_first_contact_part(part)), "")
+        if not followup:
             followup = _first_contact_followup(clinic)
         return " ||| ".join([intro, followup][:2])
 
-    if parts and "soy melissa" in _normalize_conv_text(parts[0]):
+    if parts and "soy melissa" in _normalize_conv_text(parts[0]) and not _is_low_quality_first_contact_part(parts[0]):
         return " ||| ".join(parts[:3])
 
-    if not parts:
-        parts = [_first_contact_followup(clinic)]
-    return " ||| ".join(([intro] + parts)[:3])
+    filtered_parts = [part for part in parts if not _is_low_quality_first_contact_part(part)]
+    if not filtered_parts:
+        filtered_parts = [_first_contact_followup(clinic)]
+    return " ||| ".join(([intro] + filtered_parts)[:3])
 
 
 def detect_redundant_question(user_msg: str, response: str,
@@ -8696,8 +8741,8 @@ class ResponseGenerator:
         clinic_name = (clinic.get("name") or "").strip()
         agent_name = (getattr(personality, "name", "") or "Melissa").strip()
         if clinic_name:
-            return f"Hola, soy {agent_name}, del equipo de {clinic_name}."
-        return f"Hola, soy {agent_name}."
+            return f"Hola, {agent_name} por acá, del equipo de {clinic_name}."
+        return f"Hola, {agent_name} por acá."
 
     def _build_first_contact_follow_up(self, clinic: Dict) -> str:
         sector = _normalize_conv_text(str(clinic.get("sector") or ""))
@@ -8725,6 +8770,30 @@ class ResponseGenerator:
                 "Si quieres, cuéntame qué te gustaría mejorar o qué tratamiento estás mirando."
             )
         return "Te ayudo con información, valoración y disponibilidad. Cuéntame qué te gustaría revisar."
+
+    def _is_low_quality_first_turn_bubble(self, text: str) -> bool:
+        current = (text or "").strip()
+        if not current:
+            return True
+        normalized = _normalize_conv_text(current)
+        if not normalized:
+            return True
+        if looks_fragmented_reply(current):
+            return True
+        if len(normalized.split()) <= 2:
+            return True
+        if any(
+            marker in normalized
+            for marker in (
+                "asistente virtual",
+                "recepcionista virtual",
+                "soy melissa",
+                "te habla melissa",
+                "hoy",
+            )
+        ):
+            return True
+        return normalized in {"hola", "hola hoy", "hoy"}
 
     def _is_identity_probe(self, user_msg: str) -> bool:
         normalized = _normalize_conv_text(user_msg or "")
@@ -8922,14 +8991,15 @@ class ResponseGenerator:
             return " ||| ".join(self._build_identity_probe_bubbles(clinic, personality, user_msg))
 
         if greeting_only:
-            if cleaned:
-                return " ||| ".join(cleaned[:2])
+            usable = [part for part in cleaned if not self._is_low_quality_first_turn_bubble(part)]
+            if usable:
+                return " ||| ".join(usable[:2])
             follow_up = self._build_first_contact_follow_up(clinic)
-            return follow_up
+            return " ||| ".join([intro, follow_up])
 
         if cleaned:
             first_content = cleaned[0].lower()
-            if any(pattern in first_content for pattern in generic_patterns):
+            if self._is_low_quality_first_turn_bubble(cleaned[0]) or any(pattern in first_content for pattern in generic_patterns):
                 cleaned[0] = self._build_contextual_first_turn_follow_up(clinic, user_msg)
         else:
             cleaned = [self._build_contextual_first_turn_follow_up(clinic, user_msg)]
@@ -13079,9 +13149,16 @@ class MelissaUltra:
         clinic_name = str(demo_clinic.get("name") or "").strip()
         sector = str(demo_clinic.get("sector") or "").strip().lower()
         env_sector = str(Config.SECTOR or Config.DEMO_SECTOR or "").strip().lower()
+        configured_demo_name = str(Config.DEMO_BUSINESS_NAME or "").strip()
+        normalized_demo_name = _normalize_conv_text(configured_demo_name)
+        if normalized_demo_name in {"clinica demo", "clínica demo", "demo", "nova"}:
+            configured_demo_name = ""
 
         if clinic_name.lower() == "nova":
-            demo_clinic["name"] = ""
+            demo_clinic["name"] = configured_demo_name or "la clínica"
+
+        if not str(demo_clinic.get("name") or "").strip():
+            demo_clinic["name"] = configured_demo_name or "la clínica"
 
         if not sector or sector == "otro":
             demo_clinic["sector"] = env_sector or "estetica"
@@ -13956,12 +14033,19 @@ class MelissaUltra:
 
         def _send(r):
             _demo_archetype = self._demo_sessions.get(btone_key + "_arch", "amigable")
-            # PATCH P2 — demo nunca hereda nombre de clínica real cuando no hay negocio
-            _demo_clinic = {"name": business_name}
+            _demo_clinic = self._build_demo_patient_clinic(
+                {
+                    **clinic,
+                    "name": business_name or clinic.get("name", ""),
+                    "sector": clinic.get("sector") or Config.DEMO_SECTOR,
+                }
+            )
             _is_first_demo_turn = not any(m.get("role") == "assistant" for m in history)
             r = v8_process_response(r, chat_id=chat_id, archetype=_demo_archetype)
-            # PATCH P4 — normalize solo cuando hay negocio cargado, no antes
-            if _is_first_demo_turn and business_name:
+            should_normalize_first_turn = _is_first_demo_turn and (
+                bool(business_name) or self._demo_should_use_patient_chat_path(text)
+            )
+            if should_normalize_first_turn:
                 r = _normalize_first_contact_response(
                     r,
                     _demo_clinic,
@@ -14180,12 +14264,19 @@ class MelissaUltra:
         def _send(r):
             # V8.0: aplicar AntiRobotFilter antes de guardar y enviar
             _demo_archetype = self._demo_sessions.get(btone_key + "_arch", "amigable")
-            # PATCH P2 — demo nunca hereda nombre de clínica real cuando no hay negocio
-            _demo_clinic = {"name": business_name}
+            _demo_clinic = self._build_demo_patient_clinic(
+                {
+                    **clinic,
+                    "name": business_name or clinic.get("name", ""),
+                    "sector": clinic.get("sector") or Config.DEMO_SECTOR,
+                }
+            )
             _is_first_demo_turn = not any(m.get("role") == "assistant" for m in history)
             r = v8_process_response(r, chat_id=chat_id, archetype=_demo_archetype)
-            # PATCH P4 — normalize solo cuando hay negocio cargado
-            if _is_first_demo_turn and business_name:
+            should_normalize_first_turn = _is_first_demo_turn and (
+                bool(business_name) or self._demo_should_use_patient_chat_path(text)
+            )
+            if should_normalize_first_turn:
                 r = _normalize_first_contact_response(
                     r,
                     _demo_clinic,

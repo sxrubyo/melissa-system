@@ -167,3 +167,105 @@ def test_conversation_engine_recognizes_status_greetings_as_llm_greetings() -> N
 
     assert result.handled is False
     assert result.reason == "llm_greeting"
+
+
+def test_normalize_first_patient_turn_repairs_low_quality_whatsapp_greeting() -> None:
+    module = load_melissa_module()
+    generator = module.ResponseGenerator.__new__(module.ResponseGenerator)
+    clinic = {"name": "Clinica de las americas", "sector": "estetica", "services": ["Botox", "Rellenos"]}
+    personality = types.SimpleNamespace(name="Melissa", archetype="amigable")
+
+    result = generator._normalize_first_patient_turn(
+        response="hola! Soy Melissa, la asistente virtual. hoy?",
+        clinic=clinic,
+        personality=personality,
+        user_msg="hola",
+        history=[],
+    )
+
+    lowered = result.lower()
+    assert "asistente virtual" not in lowered
+    assert "hoy?" not in lowered
+    assert "botox" in lowered or "rellenos" in lowered
+    assert "melissa por acá" in lowered or "hola, melissa" in lowered
+
+
+def test_conversation_engine_identity_probe_for_whatsapp_stays_human() -> None:
+    from melissa_core.conversation_engine import ConversationEngine
+    from melissa_core.persona_registry import PersonaRegistry
+
+    core_root = MODULE_PATH.parent
+    registry = PersonaRegistry(core_root / "personas" / "melissa" / "base")
+    engine = ConversationEngine(registry)
+
+    result = engine.handle(
+        clinic={
+            "name": "Clinica de las americas",
+            "sector": "estetica",
+            "persona_key": "estetica_whatsapp",
+            "channel": "whatsapp",
+        },
+        user_msg="quien eres",
+        history=[],
+        is_admin=False,
+        channel="whatsapp",
+    )
+
+    joined = " ".join(result.bubbles).lower()
+    assert result.handled is True
+    assert "recepcionista virtual" not in joined
+    assert "asistente virtual" not in joined
+    assert "melissa" in joined
+    assert "tratamientos" in joined or "valoración" in joined or "valoracion" in joined
+
+
+def test_brain_v10_normalize_wrapper_does_not_bypass_low_quality_first_turn() -> None:
+    import melissa_brain_v10 as brain_v10
+
+    calls = []
+
+    def original_fn(self, response, clinic, personality, user_msg, history):
+        calls.append((response, user_msg))
+        return "normalized"
+
+    wrapped = brain_v10._make_llm_first_normalize(original_fn)
+
+    result = wrapped(
+        object(),
+        "hola! Soy Melissa, la asistente virtual. hoy?",
+        {"name": "Clinica de las americas", "sector": "estetica"},
+        types.SimpleNamespace(name="Melissa"),
+        "hola",
+        [],
+    )
+
+    assert result == "normalized"
+    assert calls == [("hola! Soy Melissa, la asistente virtual. hoy?", "hola")]
+
+
+def test_normalize_first_contact_response_rewrites_bad_greeting_followup() -> None:
+    module = load_melissa_module()
+
+    result = module._normalize_first_contact_response(
+        "hola! Soy Melissa, tu. hoy?",
+        {"name": "la clínica", "services": ["Botox"], "sector": "estetica"},
+        "hola",
+    )
+
+    lowered = result.lower()
+    assert "soy melissa, tu. hoy?" not in lowered
+    assert "qué te gustaría revisar" in lowered or "que te gustaria revisar" in lowered
+
+
+def test_normalize_first_contact_response_drops_duplicate_intro_bubble() -> None:
+    module = load_melissa_module()
+
+    result = module._normalize_first_contact_response(
+        "Melissa por acá, del equipo de la clínica. ||| Botox lo manejan acá. Si quieres, te cuento cómo lo trabajan y qué suelen revisar para que se vea natural.",
+        {"name": "la clínica", "services": ["Botox"], "sector": "estetica"},
+        "quiero una cita para botox",
+    )
+
+    lowered = result.lower()
+    assert lowered.count("melissa por acá") + lowered.count("melissa por aca") == 1
+    assert "botox lo manejan acá" in lowered or "botox lo manejan aca" in lowered

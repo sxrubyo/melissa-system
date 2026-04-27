@@ -358,6 +358,27 @@ class LLMResponseValidator:
             return False
         return bool(re.match(r"^[¿]?\w{1,12}\?$", cleaned.strip()))
 
+    def is_low_quality_first_turn(self, response: str) -> bool:
+        cleaned = (response or "").strip()
+        if not cleaned:
+            return True
+        normalized = cleaned.lower()
+        if len(cleaned.split()) <= 3:
+            return True
+        if any(
+            marker in normalized
+            for marker in (
+                "asistente virtual",
+                "recepcionista virtual",
+                "soy melissa",
+                "te habla melissa",
+            )
+        ):
+            return True
+        if re.search(r"\bhoy\?$", normalized):
+            return True
+        return False
+
     def is_repeating_previous(self, response: str, history: List[Dict[str, Any]]) -> bool:
         """
         NUEVO v10.1: True si la respuesta repite casi exactamente
@@ -407,6 +428,7 @@ def _make_llm_first_normalize(original_fn):
         if (
             _validator.is_empty_or_useless(response)
             or _validator.looks_like_question_only(response)
+            or _validator.is_low_quality_first_turn(response)
         ):
             log.debug("[brain_v10] respuesta inútil en primer turno → aplicando normalize")
             return original_fn(self, response, clinic, personality, user_msg, history)
