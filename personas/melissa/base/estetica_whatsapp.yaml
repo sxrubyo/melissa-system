@@ -30,3 +30,7 @@ forbidden_patterns:
   - "encantada de conocerte"
   - "soy una asistente virtual"
   - "en qué más le puedo servir"
+  - "buenas, en qué te ayudo"
+  - "hola, en qué te ayudo"
+  - "cuéntame en qué te ayudo"
+  - "cómo puedo ayudarte"

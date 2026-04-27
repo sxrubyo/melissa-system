@@ -434,39 +434,53 @@ def test_admin_patient_chat_preview_defaults_to_last_ten_messages() -> None:
     assert runtime._admin_pending["admin-1"]["selected_chat_id"] == "573000000001"
 
 
-def test_legacy_greeting_library_avoids_en_que_te_ayudo_openers() -> None:
-    module = load_melissa_module()
+def test_persona_forbidden_patterns_include_helpdesk_openers() -> None:
+    from melissa_core.persona_registry import PersonaRegistry
 
-    primer_saludo = module.V9_NATURAL_RESPONSE_LIBRARY["primer_saludo"]
-    banned = (
-        "en qué te ayudo",
-        "en que te ayudo",
-        "en qué te puedo ayudar",
-        "en que te puedo ayudar",
-        "cómo puedo ayudarte",
-        "como puedo ayudarte",
+    registry = PersonaRegistry(MODULE_PATH.parent / "personas" / "melissa" / "base")
+    profile = registry.get("estetica_whatsapp")
+    assert profile is not None
+
+    banned = " / ".join(profile.forbidden_patterns).lower()
+    assert "buenas, en qué te ayudo" in banned
+    assert "hola, en qué te ayudo" in banned
+    assert "cuéntame en qué te ayudo" in banned
+    assert "cómo puedo ayudarte" in banned
+
+
+def test_system_prompt_explicitly_forbids_helpdesk_openers() -> None:
+    module = load_melissa_module()
+    generator = module.ResponseGenerator.__new__(module.ResponseGenerator)
+    from melissa_core.persona_registry import PersonaRegistry
+
+    generator._conversation_registry = PersonaRegistry(MODULE_PATH.parent / "personas" / "melissa" / "base")
+    module.owner_style_controller = None
+    module.db = types.SimpleNamespace(
+        get_core_memory_block=lambda: "",
+        get_trust_rules=lambda limit=4: [],
+        get_behavior_playbooks=lambda limit=3: [],
+    )
+    personality = types.SimpleNamespace(
+        name="Melissa",
+        tone_instruction="",
+        custom_phrases={},
+        forbidden_words=[],
     )
 
-    for variants in primer_saludo.values():
-        for line in variants:
-            lowered = line.lower()
-            assert not any(token in lowered for token in banned)
-
-
-def test_smart_variety_sector_openings_avoid_helpdesk_openers() -> None:
-    module = load_melissa_module()
-    banned = (
-        "en qué te ayudo",
-        "en que te ayudo",
-        "en qué te puedo ayudar",
-        "en que te puedo ayudar",
-        "en qué le puedo ayudar",
-        "en que le puedo ayudar",
-        "cómo puedo ayudarte",
-        "como puedo ayudarte",
+    prompt = generator._build_compact_system_prompt(
+        clinic={"name": "la clínica", "sector": "estetica", "services": ["Botox", "Rellenos"]},
+        patient={"name": "", "visits": 0, "is_new": True, "last_service": ""},
+        personality=personality,
+        search_context="",
+        reasoning={},
+        kb_context="",
+        context_summary="",
+        pre_prompt_injection="",
+        chat_id="test-chat",
+        history=[],
     )
 
-    for variants in module.SmartVariety.SECTOR_OPENINGS.values():
-        for line in variants:
-            lowered = line.lower()
-            assert not any(token in lowered for token in banned)
+    lowered = prompt.lower()
+    assert "buenas, en qué te ayudo" in lowered
+    assert "hola, en qué te ayudo" in lowered
+    assert "cuéntame en qué te ayudo" in lowered

@@ -9339,6 +9339,19 @@ class ResponseGenerator:
         if owner_style_hint:
             parts.append(owner_style_hint)
 
+        persona_forbidden = []
+        try:
+            if getattr(self, "_conversation_registry", None):
+                persona_profile = self._conversation_registry.resolve_for_clinic(clinic or {})
+                persona_forbidden = list(getattr(persona_profile, "forbidden_patterns", []) or [])
+        except Exception:
+            persona_forbidden = []
+        if persona_forbidden:
+            parts.append(
+                "Evita estas aperturas o coletillas de plantilla: "
+                + " / ".join(persona_forbidden[:8])
+            )
+
         if context_summary:
             parts.append(self._truncate_block(context_summary, 400))
 
@@ -9440,6 +9453,7 @@ class ResponseGenerator:
                 "- preséntate corto una sola vez como Melissa, la asesora virtual del negocio\n"
                 "- si la persona ya dijo el motivo, responde desde eso de una vez\n"
                 "- no digas 'en qué te puedo ayudar' ni 'cómo puedo ayudarte'\n"
+                "- evita aperturas de mesa de ayuda como 'buenas, en qué te ayudo', 'hola, en qué te ayudo' o 'cuéntame en qué te ayudo'\n"
                 "- no abras con 'oye', 'mira' ni 'qué te trae por acá'\n"
                 "- no te presentes con speech largo; solo ubica quién eres y sigue\n"
                 "- máximo una pregunta útil, no un formulario\n"
@@ -21933,6 +21947,7 @@ PRIMER TURNO:
 - preséntate corto como Melissa, la asesora virtual del negocio
 - no abras con "hola"
 - no abras con "entiendo"
+- no abras con "buenas, en qué te ayudo", "hola, en qué te ayudo" ni "cuéntame en qué te ayudo"
 - no abras con "oye" ni "qué te trae por acá"
 - no uses "claro" ni validaciones vacías
 - reacciona a lo que la persona ya dijo

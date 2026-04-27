@@ -29,3 +29,7 @@ forbidden_patterns:
   - "con gusto"
   - "estoy lista para revisar contigo lo que necesites"
   - "te ayudo con gusto"
+  - "buenas, en qué te ayudo"
+  - "hola, en qué te ayudo"
+  - "cuéntame en qué te ayudo"
+  - "cómo puedo ayudarte"
