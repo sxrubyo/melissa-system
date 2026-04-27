@@ -86,6 +86,21 @@ from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from melissa_cli_bb import (
+    BBContext,
+    bb_apply_persona as _bb_apply_persona_impl,
+    bb_load_persona as _bb_load_persona_impl,
+    bb_persona_defaults as _bb_persona_defaults_impl,
+    bb_personality_catalog as _bb_personality_catalog_impl,
+    bb_prompt_block as _bb_prompt_block_impl,
+    bb_read_persona_db as _bb_read_persona_db_impl,
+    bb_score_prompt as _bb_score_prompt_impl,
+    bb_show_agent_summary as _bb_show_agent_summary_impl,
+    bb_write_persona_db as _bb_write_persona_db_impl,
+    cmd_bb as _cmd_bb_impl,
+    cmd_bb_config as _cmd_bb_config_impl,
+)
+
 # ══════════════════════════════════════════════════════════════════════════════
 # READLINE + AUTOCOMPLETADO
 # ══════════════════════════════════════════════════════════════════════════════
@@ -6023,371 +6038,85 @@ def cmd_pair(args):
     info("Si esa instancia usa token compartido, el router base ya podrá enrutarle los updates")
 
 
+def _bb_context() -> BBContext:
+    return BBContext(
+        melissa_dir=MELISSA_DIR,
+        colors=C,
+        print_logo=print_logo,
+        section=section,
+        q=q,
+        kv=kv,
+        info=info,
+        nl=nl,
+        fail=fail,
+        warn=warn,
+        ok=ok,
+        prompt=prompt,
+        confirm=confirm,
+        select=select,
+        spinner_cls=Spinner,
+        pick_instance=_pick_instance,
+        health=health,
+        v8_api=_v8_api,
+        handler_chat=cmd_chat,
+        handler_doctor=cmd_doctor,
+        handler_sync=cmd_sync,
+        handler_guide=cmd_guide,
+        handler_new=cmd_new,
+        handler_init=cmd_init,
+        handler_status=cmd_status,
+        handler_health=cmd_health,
+        handler_modelo=cmd_modelo,
+        handler_trainer_skills=cmd_trainer_skills,
+        handler_trainer_control=cmd_trainer_control,
+        handler_bb_config=cmd_bb_config,
+    )
+
+
 def cmd_bb(args):
     """Superficie Black Boss para enrutar acciones clave sin duplicar la CLI."""
-    action = (getattr(args, "subcommand", "") or "").strip().lower()
-    target_name = getattr(args, "name", "")
-
-    if not action:
-        print_logo(compact=True)
-        section("Black Boss", "Capa operativa rápida para Melissa")
-        shortcuts = [
-            ("melissa bb config [n]", "Crear y ajustar el agente de una instancia"),
-            ("melissa bb chat [n]", "Entrar al chat operativo"),
-            ("melissa bb doctor", "Diagnóstico completo"),
-            ("melissa bb sync", "Clonar runtime exacto a todas las instancias"),
-            ("melissa bb new", "Crear nueva instancia"),
-            ("melissa bb guide", "Abrir guía operativa"),
-        ]
-        for cmd_text, desc in shortcuts:
-            print(f"  {q(C.CYN, cmd_text):<30} {q(C.G1, desc)}")
-        nl()
-        info("Usa el patrón: melissa bb <acción> [instancia]")
-        return
-
-    bb_routes = {
-        "config": cmd_bb_config,
-        "chat": cmd_chat,
-        "doctor": cmd_doctor,
-        "sync": cmd_sync,
-        "guide": cmd_guide,
-        "guia": cmd_guide,
-        "new": cmd_new,
-        "crear": cmd_new,
-        "init": cmd_init,
-        "start": cmd_init,
-        "status": cmd_status,
-        "health": cmd_health,
-    }
-    handler = bb_routes.get(action)
-    if not handler:
-        fail(f"Acción BB desconocida: '{action}'")
-        info("Prueba con: melissa bb config | chat | doctor | sync | new | guide")
-        return
-
-    forwarded = argparse.Namespace(**vars(args))
-    forwarded.command = action
-    forwarded.subcommand = ""
-    forwarded.name = target_name
-    handler(forwarded)
+    return _cmd_bb_impl(_bb_context(), args)
 
 
 def _bb_persona_defaults() -> Dict[str, Any]:
-    return {
-        "name": "Melissa",
-        "role": "recepcionista IA",
-        "archetype": "amigable",
-        "tone": "natural",
-        "tone_instruction": "",
-        "formality_level": 0.35,
-        "warmth_level": 0.80,
-        "humor_level": 0.10,
-        "verbosity": 0.35,
-        "greetings": [],
-        "closings": [],
-        "affirmations": [],
-        "forbidden_words": [],
-        "custom_phrases": [],
-    }
+    return _bb_persona_defaults_impl()
 
 
-@lru_cache(maxsize=1)
 def _bb_personality_catalog() -> Dict[str, Dict[str, Any]]:
-    melissa_path = Path(MELISSA_DIR) / "melissa.py"
-    fallback = {
-        "amigable": {
-            "desc": "Cercana y natural. La opción segura por defecto.",
-            "formality": 0.35,
-            "warmth": 0.80,
-            "humor": 0.15,
-            "verbosity": 0.35,
-            "greetings": ["hola", "buenas"],
-            "affirmations": ["claro", "listo"],
-            "closings": ["cualquier cosa me escribes"],
-            "forbidden": ["estimado", "cordialmente"],
-            "tone_instruction": "",
-        }
-    }
-    try:
-        module = ast.parse(melissa_path.read_text(encoding="utf-8"))
-        for node in module.body:
-            if isinstance(node, ast.Assign):
-                for target in node.targets:
-                    if isinstance(target, ast.Name) and target.id == "PERSONALITY_ARCHETYPES":
-                        data = ast.literal_eval(node.value)
-                        if isinstance(data, dict) and data:
-                            return data
-    except Exception:
-        pass
-    return fallback
+    return _bb_personality_catalog_impl(_bb_context())
 
 
 def _bb_read_persona_db(inst: "Instance") -> Dict[str, Any]:
-    db_path = Path(inst.db_path)
-    if not db_path.exists():
-        return {}
-    try:
-        conn = sqlite3.connect(str(db_path))
-        row = conn.execute("SELECT persona_config FROM clinic WHERE id=1").fetchone()
-        if not row:
-            row = conn.execute("SELECT persona_config FROM clinic LIMIT 1").fetchone()
-        conn.close()
-    except Exception:
-        return {}
-    if not row or not row[0]:
-        return {}
-    raw = row[0]
-    if isinstance(raw, dict):
-        return dict(raw)
-    if isinstance(raw, str):
-        try:
-            parsed = json.loads(raw)
-            return parsed if isinstance(parsed, dict) else {}
-        except Exception:
-            return {}
-    return {}
+    return _bb_read_persona_db_impl(inst)
 
 
 def _bb_write_persona_db(inst: "Instance", persona: Dict[str, Any]) -> bool:
-    db_path = Path(inst.db_path)
-    if not db_path.exists():
-        fail(f"No encontré la base de datos de {inst.label}: {db_path}")
-        return False
-    try:
-        conn = sqlite3.connect(str(db_path))
-        row = conn.execute("SELECT id FROM clinic WHERE id=1").fetchone()
-        payload = json.dumps(persona, ensure_ascii=False)
-        if row:
-            conn.execute("UPDATE clinic SET persona_config=? WHERE id=1", (payload,))
-        else:
-            any_row = conn.execute("SELECT id FROM clinic LIMIT 1").fetchone()
-            if any_row:
-                conn.execute("UPDATE clinic SET persona_config=? WHERE id=?", (payload, any_row[0]))
-            else:
-                conn.execute("INSERT INTO clinic (id, persona_config) VALUES (1, ?)", (payload,))
-        conn.commit()
-        conn.close()
-        return True
-    except Exception as exc:
-        fail(f"No pude guardar la personalidad en SQLite: {exc}")
-        return False
+    return _bb_write_persona_db_impl(_bb_context(), inst, persona)
 
 
 def _bb_load_persona(inst: "Instance") -> Dict[str, Any]:
-    persona = _bb_persona_defaults()
-    stored = _bb_read_persona_db(inst)
-    persona.update(stored)
-    return persona
+    return _bb_load_persona_impl(inst)
 
 
 def _bb_apply_persona(inst: "Instance", updates: Dict[str, Any], spinner_label: str = "Actualizando agente...") -> bool:
-    current = _bb_load_persona(inst)
-    current.update({k: v for k, v in updates.items() if v is not None})
-
-    if health(inst.port):
-        with Spinner(spinner_label) as sp:
-            response = _v8_api(inst, "/personality", method="PATCH", payload=updates, timeout=12)
-            if response.get("ok"):
-                sp.finish("Agente actualizado")
-                return True
-            sp.finish(f"API no respondió: {response.get('error', 'sin respuesta')}", ok=False)
-        warn("La instancia no aceptó el cambio por API; guardando directamente en la base local.")
-
-    if _bb_write_persona_db(inst, current):
-        ok("Agente actualizado en la base local")
-        return True
-    return False
+    return _bb_apply_persona_impl(_bb_context(), inst, updates, spinner_label=spinner_label)
 
 
 def _bb_prompt_block(label: str, initial: str = "") -> str:
-    editor = os.getenv("EDITOR") or (
-        "notepad" if os.name == "nt" else ("nano" if shutil.which("nano") else "vi" if shutil.which("vi") else "")
-    )
-    if editor and shutil.which(editor):
-        if confirm(f"¿Abrir {editor} para editar {label.lower()}?", default=True):
-            fd, tmp_path = tempfile.mkstemp(prefix="melissa-bb-", suffix=".txt")
-            os.close(fd)
-            temp_file = Path(tmp_path)
-            temp_file.write_text((initial or "").strip() + "\n", encoding="utf-8")
-            subprocess.run([editor, str(temp_file)], check=False)
-            try:
-                value = temp_file.read_text(encoding="utf-8").strip()
-            finally:
-                temp_file.unlink(missing_ok=True)
-            return value or initial
-    return prompt(label, default=initial)
+    return _bb_prompt_block_impl(_bb_context(), label, initial=initial)
 
 
 def _bb_score_prompt(label: str, current: Any, default: float) -> float:
-    raw_default = current if current not in (None, "") else default
-    raw = prompt(label, default=str(raw_default))
-    try:
-        value = float(raw)
-    except Exception:
-        warn("Valor inválido; mantengo el actual.")
-        return float(raw_default)
-    return max(0.0, min(1.0, value))
+    return _bb_score_prompt_impl(_bb_context(), label, current, default)
 
 
 def _bb_show_agent_summary(inst: "Instance", persona: Optional[Dict[str, Any]] = None) -> None:
-    persona = persona or _bb_load_persona(inst)
-    catalog = _bb_personality_catalog()
-    archetype = persona.get("archetype", "amigable")
-    archetype_info = catalog.get(archetype, {})
-    section(f"Black Boss Config — {inst.label}", "Agente, prompt y personalidad")
-    kv("Agente", persona.get("name", "Melissa"))
-    kv("Rol", persona.get("role", "recepcionista IA"))
-    kv("Arquetipo", f"{archetype} · {archetype_info.get('desc', 'sin descripción')}")
-    kv("Formalidad", f"{float(persona.get('formality_level', 0.35)):.2f}")
-    kv("Calidez", f"{float(persona.get('warmth_level', 0.80)):.2f}")
-    kv("Humor", f"{float(persona.get('humor_level', 0.10)):.2f}")
-    kv("Detalle", f"{float(persona.get('verbosity', 0.35)):.2f}")
-    tone_instruction = (persona.get("tone_instruction", "") or "").strip()
-    if tone_instruction:
-        info("Prompt maestro:")
-        print(f"    {q(C.G1, tone_instruction[:160] + ('…' if len(tone_instruction) > 160 else ''))}")
-    else:
-        info("Prompt maestro: usando el del arquetipo activo")
-    nl()
-
-
-def _bb_pick_archetype(current_id: str) -> Optional[str]:
-    catalog = _bb_personality_catalog()
-    keys = list(catalog.keys())
-    labels = [k.replace("_", " ").title() for k in keys]
-    descs = [catalog[k].get("desc", "") for k in keys]
-    title = f"Elige la personalidad base (actual: {current_id})"
-    idx = select(labels, descs=descs, title=title)
-    return keys[idx] if 0 <= idx < len(keys) else None
-
-
-def _bb_forward_inst(handler, inst: "Instance", *, name: str = "", subcommand: str = ""):
-    forwarded = argparse.Namespace(name=name, subcommand=subcommand or inst.name, command="")
-    return handler(forwarded)
+    return _bb_show_agent_summary_impl(_bb_context(), inst, persona)
 
 
 def cmd_bb_config(args):
     """Configura el agente Melissa de una instancia: nombre, prompt, personalidad y skills."""
-    inst = _pick_instance(args, "¿Cuál agente Melissa quieres ajustar?")
-    if not inst:
-        return
-
-    while True:
-        print_logo(compact=True, sector=inst.sector)
-        persona = _bb_load_persona(inst)
-        _bb_show_agent_summary(inst, persona)
-
-        options = [
-            "Crear / renombrar agente",
-            "Elegir personalidad base",
-            "Editar prompt maestro",
-            "Ajustar tono fino",
-            "Cambiar modelo LLM",
-            "Activar / desactivar skills",
-            "Control duro y frases prohibidas",
-            "Enseñarle una instrucción nueva",
-            "Ver resumen otra vez",
-            "Salir",
-        ]
-        descs = [
-            "Nombre visible, rol y perfil del agente.",
-            "Aplica un arquetipo base listo para usar.",
-            "Edita la instrucción central del agente.",
-            "Formalidad, calidez, humor y nivel de detalle.",
-            "Abre el catálogo de modelos para esta instancia.",
-            "Gestiona skills del agente en caliente.",
-            "Ajusta frases prohibidas, saludo y estilo duro.",
-            "Le enseña un patrón nuevo sin tocar código.",
-            "Recarga la configuración actual.",
-            "Volver a la terminal.",
-        ]
-        choice = select(options, descs=descs, title="¿Qué quieres cambiar en este agente?")
-
-        if choice == 0:
-            new_name = prompt("Nombre visible del agente", default=persona.get("name", "Melissa"))
-            new_role = prompt("Rol del agente", default=persona.get("role", "recepcionista IA"))
-            _bb_apply_persona(
-                inst,
-                {"name": new_name, "role": new_role},
-                spinner_label="Actualizando identidad del agente...",
-            )
-        elif choice == 1:
-            archetype_id = _bb_pick_archetype(persona.get("archetype", "amigable"))
-            if not archetype_id:
-                continue
-            data = _bb_personality_catalog().get(archetype_id, {})
-            _bb_apply_persona(
-                inst,
-                {
-                    "archetype": archetype_id,
-                    "tone": data.get("desc", persona.get("tone", "natural")),
-                    "tone_instruction": data.get("tone_instruction", ""),
-                    "formality_level": data.get("formality", persona.get("formality_level", 0.35)),
-                    "warmth_level": data.get("warmth", persona.get("warmth_level", 0.80)),
-                    "humor_level": data.get("humor", persona.get("humor_level", 0.10)),
-                    "verbosity": data.get("verbosity", persona.get("verbosity", 0.35)),
-                    "greetings": data.get("greetings", []),
-                    "affirmations": data.get("affirmations", []),
-                    "closings": data.get("closings", []),
-                    "forbidden_words": data.get("forbidden", []),
-                },
-                spinner_label="Aplicando personalidad base...",
-            )
-        elif choice == 2:
-            new_prompt = _bb_prompt_block(
-                "Prompt maestro",
-                initial=persona.get("tone_instruction", ""),
-            )
-            if new_prompt.strip():
-                _bb_apply_persona(
-                    inst,
-                    {"tone_instruction": new_prompt.strip()},
-                    spinner_label="Guardando prompt maestro...",
-                )
-        elif choice == 3:
-            tone = prompt("Descripción corta del tono", default=persona.get("tone", "natural"))
-            formality = _bb_score_prompt("Formalidad (0.0 a 1.0)", persona.get("formality_level"), 0.35)
-            warmth = _bb_score_prompt("Calidez (0.0 a 1.0)", persona.get("warmth_level"), 0.80)
-            humor = _bb_score_prompt("Humor (0.0 a 1.0)", persona.get("humor_level"), 0.10)
-            verbosity = _bb_score_prompt("Nivel de detalle (0.0 a 1.0)", persona.get("verbosity"), 0.35)
-            _bb_apply_persona(
-                inst,
-                {
-                    "tone": tone,
-                    "formality_level": formality,
-                    "warmth_level": warmth,
-                    "humor_level": humor,
-                    "verbosity": verbosity,
-                },
-                spinner_label="Ajustando tono del agente...",
-            )
-        elif choice == 4:
-            _bb_forward_inst(cmd_modelo, inst, name=inst.name, subcommand=inst.name)
-        elif choice == 5:
-            _bb_forward_inst(cmd_trainer_skills, inst, name="", subcommand=inst.name)
-        elif choice == 6:
-            _bb_forward_inst(cmd_trainer_control, inst, name=inst.name, subcommand=inst.name)
-        elif choice == 7:
-            instruction = prompt("¿Qué quieres que aprenda este agente?", default="")
-            if instruction.strip():
-                with Spinner("Enseñando al agente...") as sp:
-                    response = _v8_api(
-                        inst,
-                        "/trainer/prompt/evolve",
-                        method="POST",
-                        payload={"instruction": instruction.strip(), "admin_chat_id": "cli"},
-                        timeout=20,
-                    )
-                    sp.finish("Aprendido" if response.get("ok") else "Error", ok=bool(response.get("ok")))
-                if response.get("ok"):
-                    ok(response.get("description", "Instrucción procesada"))
-                else:
-                    fail(f"Error: {response.get('error', 'sin respuesta')}")
-        elif choice == 8:
-            continue
-        else:
-            break
-        nl()
+    return _cmd_bb_config_impl(_bb_context(), args)
 
 
 ROUTES = {

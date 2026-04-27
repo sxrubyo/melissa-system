@@ -62,8 +62,10 @@ Melissa es un runtime base para recepcionistas IA orientadas a WhatsApp y Telegr
   El CLI tiene cuatro dominios mezclados en un solo archivo:
   - lifecycle de instancias
   - health/doctor/logs
-  - `bb` y entrenamiento operativo
+  - entrenamiento operativo
   - sync/runtime propagation
+- `melissa_cli_bb.py`
+  Capa Black Boss extraída del CLI principal: agente, personalidad, prompt maestro y puente hacia trainer/modelo.
 
 ## Tamaño real del problema
 
@@ -96,7 +98,6 @@ El principal cuello de botella de mantenimiento no es el runtime en sí, sino el
 
 - partir `melissa_cli.py` en:
   - `melissa_cli_instances.py`
-  - `melissa_cli_bb.py`
   - `melissa_cli_runtime.py`
   - `melissa_cli_common.py`
 
