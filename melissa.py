@@ -1274,26 +1274,26 @@ V9_NATURAL_RESPONSE_LIBRARY: Dict[str, Dict[str, List[str]]] = {
 
     "primer_saludo": {
         "mañana": [
-            "buenos días, en qué te puedo ayudar",
-            "buenos días, cuéntame en qué te ayudo",
-            "buenos días, cuéntame",
+            "buenos días",
+            "hola, buenos días",
+            "cuéntame qué te gustaría revisar",
         ],
         "tarde": [
-            "buenas tardes, en qué te ayudo",
-            "buenas, cuéntame",
-            "buenas, cuéntame",
+            "buenas tardes",
+            "hola, buenas tardes",
+            "cuéntame qué te interesa",
         ],
         "noche": [
-            "buenas noches, en qué te puedo ayudar",
-            "buenas noches, cuéntame",
-            "hola, en qué te ayudo",
+            "buenas noches",
+            "hola, buenas noches",
+            "si quieres, cuéntame qué te interesa",
         ],
         "informal": [
-            "hola qué más, en qué te ayudo",
-            "hola buenas, cuéntame",
-            "hola, en qué te ayudo",
-            "buenas, en qué te ayudo",
+            "hola qué más",
+            "hola buenas",
+            "buenas",
             "hola, cuéntame",
+            "si quieres, dime qué te interesa",
         ],
     },
 
@@ -4918,15 +4918,15 @@ class SmartVariety:
     SECTOR_OPENINGS = {
         "dental": [
             "hola", "buenas", "hola buenas",
-            "hola, cómo le puedo ayudar", "buenas tardes",
+            "cuéntame", "buenas tardes",
         ],
         "veterinaria": [
             "hola", "hola buenas", "buenas",
-            "cómo están", "hola, con gusto",
+            "cómo están", "cuéntame",
         ],
         "restaurante": [
             "hola", "buenas", "hola buenas",
-            "hola, en qué les puedo ayudar", "buenas tardes",
+            "cuéntame", "buenas tardes",
         ],
         "gimnasio": [
             "hola", "hola qué más", "buenas",
@@ -4942,11 +4942,11 @@ class SmartVariety:
         ],
         "psicologo": [
             "hola", "hola qué tal", "buenas",
-            "hola, en qué puedo ayudarte", "buenas",
+            "cuéntame", "buenas",
         ],
         "abogado": [
             "buenos días", "buenas tardes", "buenas",
-            "buenas tardes, en qué le puedo ayudar", "buenos días",
+            "cuénteme", "buenos días",
         ],
         "medico": [
             "buenas", "buenas tardes", "buenos días",
@@ -5840,10 +5840,10 @@ def _first_contact_followup(clinic: Dict[str, Any]) -> str:
         lead_services = ", ".join(str(service).strip() for service in services[:3] if str(service).strip())
         if lead_services:
             return (
-                f"Estoy aquí para ayudarte con citas, horarios y servicios como {lead_services}. "
+                f"Si quieres, te ubico con citas, horarios y servicios como {lead_services}. "
                 "Qué te gustaría revisar?"
             )
-    return "Estoy aquí para ayudarte con citas, horarios o el servicio que necesites. Qué te gustaría revisar?"
+    return "Si quieres, te ubico con citas, horarios o el servicio que necesites. Qué te gustaría revisar?"
 
 
 def _clean_first_contact_part(text: str) -> str:
@@ -8858,19 +8858,19 @@ class ResponseGenerator:
             if lead_services:
                 if is_estetica:
                     return (
-                        f"Estoy aquí para ayudarte con {lead_services}, valoración y disponibilidad. "
+                        f"Te ubico con {lead_services}, valoración y disponibilidad. "
                         "Si quieres, cuéntame qué te interesa o qué tratamiento estás mirando."
                     )
                 return (
-                    f"Estoy aquí para ayudarte con información, valoración y disponibilidad de servicios como {lead_services}. "
+                    f"Te ubico con información, valoración y disponibilidad de servicios como {lead_services}. "
                     "Cuéntame qué te gustaría revisar."
                 )
         if is_estetica:
             return (
-                "Estoy aquí para ayudarte con tratamientos, valoración y disponibilidad. "
+                "Te ubico con tratamientos, valoración y disponibilidad. "
                 "Si quieres, cuéntame qué te interesa o qué tratamiento estás mirando."
             )
-        return "Estoy aquí para ayudarte con información, valoración y disponibilidad. Cuéntame qué te gustaría revisar."
+        return "Te ubico con información, valoración y disponibilidad. Cuéntame qué te gustaría revisar."
 
     def _is_low_quality_first_turn_bubble(self, text: str) -> bool:
         current = (text or "").strip()
@@ -10033,7 +10033,7 @@ cliente: cuánto vale mensual
 {agent_name}: el de 3 días por semana está en 280, el de 5 días en 380 ||| sin contrato, pagas mes a mes""",
 
             "otro": f"""cliente: hola buenas
-{agent_name}: hola, cuéntame en qué te puedo ayudar
+{agent_name}: hola ||| cuéntame qué te gustaría revisar
 
 cliente: quería información sobre sus servicios
 {agent_name}: claro, qué fue lo que te hizo buscarnos hoy
@@ -10142,12 +10142,7 @@ cliente: lo vi en redes y me llamó la atención
             "Claro, con gusto", "claro, con gusto",
             # Frases IA/chatbot que delatan que es un bot
             "Como asistente virtual", "como asistente virtual",
-            "Como IA", "como IA", "como ia",
-            "Como inteligencia artificial", "como inteligencia artificial",
-            "Soy una IA", "soy una IA", "soy una ia",
             "No tengo emociones", "no tengo emociones",
-            "No soy humano", "no soy humano",
-            "Soy un bot", "soy un bot",
             "No te preocupes", "no te preocupes",
             "Mi programación", "mi programación",
             "He procesado tu consulta", "he procesado tu consulta",
@@ -14491,7 +14486,7 @@ class MelissaUltra:
                 "depende del negocio — de qué trabaja usted?",
                 "todo depende de qué tan ocupado está tu WhatsApp comercial ||| ¿qué negocio tienes?",
                 "ah bacano ||| y de qué se trata el negocio para el que te la recomendaron?",
-                "soy la recepcionista virtual — contesto WhatsApp por negocios como si fuera una persona del equipo ||| ¿de qué es tu negocio?",
+                "soy Melissa, la asesora virtual que lleva este chat ||| ¿de qué es tu negocio?",
             ]
             return _send(_rref.choice(_referral_responses))
 

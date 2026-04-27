@@ -432,3 +432,41 @@ def test_admin_patient_chat_preview_defaults_to_last_ten_messages() -> None:
     assert "mensaje 6" in text
     assert "mensaje 14" in text
     assert runtime._admin_pending["admin-1"]["selected_chat_id"] == "573000000001"
+
+
+def test_legacy_greeting_library_avoids_en_que_te_ayudo_openers() -> None:
+    module = load_melissa_module()
+
+    primer_saludo = module.V9_NATURAL_RESPONSE_LIBRARY["primer_saludo"]
+    banned = (
+        "en qué te ayudo",
+        "en que te ayudo",
+        "en qué te puedo ayudar",
+        "en que te puedo ayudar",
+        "cómo puedo ayudarte",
+        "como puedo ayudarte",
+    )
+
+    for variants in primer_saludo.values():
+        for line in variants:
+            lowered = line.lower()
+            assert not any(token in lowered for token in banned)
+
+
+def test_smart_variety_sector_openings_avoid_helpdesk_openers() -> None:
+    module = load_melissa_module()
+    banned = (
+        "en qué te ayudo",
+        "en que te ayudo",
+        "en qué te puedo ayudar",
+        "en que te puedo ayudar",
+        "en qué le puedo ayudar",
+        "en que le puedo ayudar",
+        "cómo puedo ayudarte",
+        "como puedo ayudarte",
+    )
+
+    for variants in module.SmartVariety.SECTOR_OPENINGS.values():
+        for line in variants:
+            lowered = line.lower()
+            assert not any(token in lowered for token in banned)

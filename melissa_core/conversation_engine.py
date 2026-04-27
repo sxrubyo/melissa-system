@@ -177,16 +177,16 @@ class ConversationEngine:
         if persona.capabilities:
             if clinic.get("sector") == "estetica":
                 capabilities = (
-                    f"Estoy aquí para ayudarte con {', '.join(persona.capabilities[:3])}. "
+                    f"Te ayudo con {', '.join(persona.capabilities[:3])}. "
                     "Si quieres, cuéntame qué te interesa o qué tratamiento estás mirando."
                 )
             else:
                 capabilities = (
-                    f"Estoy aquí para ayudarte con {', '.join(persona.capabilities[:3])}. "
+                    f"Te ayudo con {', '.join(persona.capabilities[:3])}. "
                     "Cuéntame qué te gustaría revisar."
                 )
         else:
-            capabilities = "Estoy aquí para ayudarte con información, valoración y disponibilidad"
+            capabilities = "Te ayudo con información, valoración y disponibilidad"
 
         return [intro, capabilities]
 
