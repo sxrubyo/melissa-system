@@ -169,7 +169,7 @@ class ConversationEngine:
         clinic_name = str(clinic.get("name") or "").strip()
         intro_template = self._choose(
             persona.first_turn_variants
-            or [f"Hola, {persona.identity} por acá{f', del equipo de {clinic_name}' if clinic_name else ''}."],
+            or [f"Hola, soy {persona.identity}, la asesora virtual{f' de {clinic_name}' if clinic_name else ''}"],
             clinic_name or persona.identity,
         )
         intro = self._render_persona_line(intro_template, persona, clinic_name)
@@ -235,12 +235,13 @@ class ConversationEngine:
             "eres bot",
         )):
             return [
-                f"Soy Melissa{f', del equipo de {clinic_name}' if clinic_name else ''}.",
-                "Llevo este chat para orientar, responder y ayudarte a avanzar sin dejarte hablando con un libreto frío.",
+                f"Soy Melissa, la asesora virtual{f' de {clinic_name}' if clinic_name else ''}",
+                "Soy una IA hecha para orientar, responder y ayudarte a avanzar sin dejarte hablando con un libreto frío",
             ]
         prior_identity = any(
             any(marker in self._normalize(str(msg.get("content") or "")) for marker in (
                 "recepcionista virtual",
+                "asesora virtual",
                 "soy melissa",
                 "trabaja por tu negocio",
                 "disponible por aqui",
@@ -251,15 +252,15 @@ class ConversationEngine:
         )
         if prior_identity:
             return [
-                f"Sigo siendo Melissa{f', del equipo de {clinic_name}' if clinic_name else ''}.",
-                "La idea es orientarte bien, sostener la conversación y ayudarte a avanzar sin respuestas de plantilla.",
+                f"Sigo siendo Melissa, la asesora virtual{f' de {clinic_name}' if clinic_name else ''}",
+                "Sigo siendo una IA hecha para orientarte bien, sostener la conversación y ayudarte a avanzar sin respuestas de plantilla",
             ]
 
         intro = self._choose(
             persona.identity_probe_variants or [
-                f"Soy {persona.identity}{f', del equipo de {clinic_name}' if clinic_name else ''}. Llevo este chat y te respondo desde acá.",
-                f"Soy {persona.identity}. Estoy por aquí para orientarte, resolver dudas y ayudarte a avanzar sin enredos.",
-                f"Soy {persona.identity}{f', del equipo de {clinic_name}' if clinic_name else ''}. Mi trabajo es que este chat se sienta claro, útil y bien llevado.",
+                f"Soy {persona.identity}, la asesora virtual{f' de {clinic_name}' if clinic_name else ''}, una IA hecha para orientarte y responderte desde acá",
+                f"Soy {persona.identity}, la asesora virtual{f' de {clinic_name}' if clinic_name else ''}. Soy una IA pensada para resolver dudas y ayudarte a avanzar sin enredos",
+                f"Soy {persona.identity}, la asesora virtual{f' de {clinic_name}' if clinic_name else ''}. Soy una IA para que este chat se sienta claro, útil y bien llevado",
             ],
             normalized,
         )
@@ -268,21 +269,21 @@ class ConversationEngine:
             capabilities = (
                 "Puedo ayudarte con "
                 + ", ".join(persona.capabilities[:3])
-                + "."
+                + ""
             )
         else:
-            capabilities = "Puedo ayudarte con información, horarios, disponibilidad, valoración y orientación inicial."
+            capabilities = "Puedo ayudarte con información, horarios, disponibilidad, valoración y orientación inicial"
 
         if clinic_name:
-            cta = "Si quieres, cuéntame qué te gustaría revisar y te ayudo desde ahí."
+            cta = "Si quieres, cuéntame qué te gustaría revisar y te ayudo desde ahí"
         else:
-            cta = "Cuéntame qué te gustaría revisar y te ubico."
+            cta = "Cuéntame qué te gustaría revisar y te ubico"
         return [intro, capabilities, cta]
 
     def _render_persona_line(self, template: str, persona: PersonaProfile, clinic_name: str) -> str:
         raw = str(template or "").strip()
         if not raw:
-            return f"Soy {persona.identity}{f', del equipo de {clinic_name}' if clinic_name else ''}."
+            return f"Soy {persona.identity}, la asesora virtual{f' de {clinic_name}' if clinic_name else ''}"
         clinic_label = clinic_name.strip() if clinic_name else ""
         if "{clinic_name}" in raw and not clinic_label:
             clinic_label = "la clínica"
@@ -290,7 +291,7 @@ class ConversationEngine:
             rendered = raw.format(clinic_name=clinic_label, identity=persona.identity).strip()
         except Exception:
             rendered = raw
-        rendered = rendered.replace("de .", "de la clínica.")
+        rendered = rendered.replace("de .", "de la clínica")
         rendered = " ".join(rendered.split())
         return rendered
 
@@ -345,8 +346,8 @@ class ConversationEngine:
 
         clinic_name = str(clinic.get("name") or "").strip()
         return [
-            f"Soy {persona.identity}{f', del equipo de {clinic_name}' if clinic_name else ''}.",
-            "Llevo este canal con contexto, seguimiento y criterio para que la conversación avance bien.",
+            f"Soy {persona.identity}, la asesora virtual{f' de {clinic_name}' if clinic_name else ''}",
+            "Soy una IA hecha para llevar este canal con contexto, seguimiento y criterio para que la conversación avance bien",
         ]
 
     def _build_first_contextual_followup(

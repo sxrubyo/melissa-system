@@ -5800,8 +5800,8 @@ def _strip_leading_greeting(text: str) -> str:
 def _first_contact_intro(clinic: Dict[str, Any], agent_name: str = "Melissa") -> str:
     clinic_name = (clinic.get("name") or "").strip()
     if clinic_name:
-        return f"Hola, {agent_name} por acá, del equipo de {clinic_name}."
-    return f"Hola, {agent_name} por acá."
+        return f"Hola, soy {agent_name}, la asesora virtual de {clinic_name}"
+    return f"Hola, soy {agent_name}, la asesora virtual"
 
 
 def _first_contact_followup(clinic: Dict[str, Any]) -> str:
@@ -5810,10 +5810,10 @@ def _first_contact_followup(clinic: Dict[str, Any]) -> str:
         lead_services = ", ".join(str(service).strip() for service in services[:3] if str(service).strip())
         if lead_services:
             return (
-                f"Estoy pendiente para ayudarte con citas, horarios o con servicios como {lead_services}. "
+                f"Te ayudo con citas, horarios y servicios como {lead_services}. "
                 "Qué te gustaría revisar?"
             )
-    return "Estoy pendiente para ayudarte con citas, horarios o el servicio que necesites. Qué te gustaría revisar?"
+    return "Te ayudo con citas, horarios o el servicio que necesites. Qué te gustaría revisar?"
 
 
 def _clean_first_contact_part(text: str) -> str:
@@ -8741,8 +8741,8 @@ class ResponseGenerator:
         clinic_name = (clinic.get("name") or "").strip()
         agent_name = (getattr(personality, "name", "") or "Melissa").strip()
         if clinic_name:
-            return f"Hola, {agent_name} por acá, del equipo de {clinic_name}."
-        return f"Hola, {agent_name} por acá."
+            return f"Hola, soy {agent_name}, la asesora virtual de {clinic_name}"
+        return f"Hola, soy {agent_name}, la asesora virtual"
 
     def _build_first_contact_follow_up(self, clinic: Dict) -> str:
         sector = _normalize_conv_text(str(clinic.get("sector") or ""))
@@ -8827,9 +8827,9 @@ class ResponseGenerator:
         normalized = _normalize_conv_text(user_msg or "")
 
         intro_variants = [
-            f"Soy {agent_name}, una recepcionista virtual{f' de {clinic_name}' if clinic_name else ''}. Trabajo por este canal 24 horas al día.",
-            f"Soy {agent_name}. Funciono como recepcionista virtual{f' de {clinic_name}' if clinic_name else ''} y estoy disponible por aquí todo el día.",
-            f"Soy {agent_name}, la recepcionista virtual{f' de {clinic_name}' if clinic_name else ''}. Mi trabajo es atender este canal de forma continua y bien llevada.",
+            f"Soy {agent_name}, la asesora virtual{f' de {clinic_name}' if clinic_name else ''}, una IA hecha para orientarte bien por este chat",
+            f"Soy {agent_name}, la asesora virtual{f' de {clinic_name}' if clinic_name else ''}. Soy una IA pensada para responderte claro y ayudarte a avanzar",
+            f"Soy {agent_name}, la asesora virtual que lleva este chat{f' de {clinic_name}' if clinic_name else ''}. Soy una IA para ubicarte bien y acompañarte",
         ]
         intro = intro_variants[len(normalized) % len(intro_variants)]
 
@@ -8838,17 +8838,17 @@ class ResponseGenerator:
         if lead_services:
             capabilities = (
                 "Puedo ayudarte con información, horarios, disponibilidad, valoración y orientación inicial"
-                f" sobre servicios como {', '.join(lead_services)}."
+                f" sobre servicios como {', '.join(lead_services)}"
             )
         else:
             capabilities = (
                 "Puedo ayudarte con información, horarios, disponibilidad, valoración y orientación inicial"
-                " para que el primer contacto se sienta claro, útil y bien llevado."
+                " para que el primer contacto se sienta claro, útil y bien llevado"
             )
 
         cta = ""
         if any(token in normalized for token in ("probarte", "demo", "negocio", "empresa", "funcionas", "eres")):
-            cta = "Si quieres probarme en serio, escríbeme el nombre de tu negocio y te muestro cómo trabajaría contigo."
+            cta = "Si quieres probarme en serio, escríbeme el nombre de tu negocio y te muestro cómo trabajaría contigo"
 
         bubbles = [intro, capabilities]
         if cta:
@@ -10003,13 +10003,7 @@ cliente: lo vi en redes y me llamó la atención
             s = _re3.sub(r'^[:\-\.!,;]+\s*', '', s).strip()
 
             # 5. Bajar mayúscula inicial si no es sigla ni nombre propio obvio
-            if s and s[0].isupper():
-                first_word = s.split()[0]
-                is_acronym = len(first_word) <= 5 and first_word == first_word.upper() and len(first_word) > 1
-                if not is_acronym:
-                    s = s[0].lower() + s[1:]
-
-            # 6. Quitar pregunta repetida al final ("...? ..." donde hay dos signos)
+            # 5. Quitar pregunta repetida al final ("...? ..." donde hay dos signos)
             s = _re3.sub(r'\?\s*\?', '?', s)
 
             return s
@@ -13105,6 +13099,7 @@ class MelissaUltra:
         prior_identity = any(
             any(marker in _normalize_conv_text(str(msg.get("content") or "")) for marker in (
                 "recepcionista virtual",
+                "asesora virtual",
                 "soy melissa",
                 "trabaja por tu negocio",
                 "trabajo por este canal",
@@ -13115,13 +13110,13 @@ class MelissaUltra:
         if prior_identity:
             if any(marker in normalized_user for marker in ("eres una ia", "eres ia", "eres una persona", "persona real", "eres un bot", "eres bot")):
                 return [
-                    f"Sigo siendo Melissa, la recepcionista virtual de {clinic_name}.",
-                    "Trabajo este canal de forma continua para orientar, responder y ayudarte a avanzar sin que todo dependa de una persona pegada al chat.",
+                    f"Sigo siendo Melissa, la asesora virtual de {clinic_name}",
+                    "Soy una IA hecha para orientar, responder y ayudarte a avanzar sin que todo dependa de una persona pegada al chat",
                 ]
             if any(marker in normalized_user for marker in ("quién eres", "quien eres", "qué eres", "que eres")):
                 return [
-                    f"Soy Melissa, la recepcionista virtual de {clinic_name}.",
-                    "La idea es atender bien, sostener la conversación y ayudarte con información, disponibilidad y siguiente paso.",
+                    f"Soy Melissa, la asesora virtual de {clinic_name}",
+                    "Soy una IA pensada para atender bien, sostener la conversación y ayudarte con información, disponibilidad y siguiente paso",
                 ]
         try:
             personality = self.generator._get_default_personality(clinic)
@@ -13139,9 +13134,9 @@ class MelissaUltra:
                 return [part.strip() for part in fallback.split("|||") if part.strip()]
         services_text = ", ".join(services[:2]) if services else "citas e información"
         return [
-            f"Soy Melissa, una recepcionista virtual de {clinic_name}. Trabajo por este canal 24 horas al día.",
-            f"Puedo ayudarte con {services_text}, horarios y orientación inicial.",
-            "Si quieres probarme, escríbeme el nombre de tu negocio y te muestro cómo trabajaría contigo.",
+            f"Soy Melissa, la asesora virtual de {clinic_name}",
+            f"Soy una IA pensada para ayudarte con {services_text}, horarios y orientación inicial",
+            "Si quieres probarme, escríbeme el nombre de tu negocio y te muestro cómo trabajaría contigo",
         ]
 
     def _build_demo_patient_clinic(self, clinic: Dict[str, Any]) -> Dict[str, Any]:
@@ -14294,9 +14289,9 @@ class MelissaUltra:
         def _demo_identity_response(user_text: str, explain_name: bool = False) -> List[str]:
             import random as _rm
             intro_options = [
-                "Soy Melissa, una recepcionista virtual que trabaja por tu negocio 24 horas al día.",
-                "Soy Melissa. Trabajo como recepcionista virtual para negocios que quieren atender bien todo el día.",
-                "Soy Melissa, una recepcionista virtual pensada para responder, orientar y sostener conversaciones por tu negocio a cualquier hora.",
+                "Soy Melissa, la asesora virtual que llevaría tu chat, una IA hecha para responder y orientar sin sonar fría",
+                "Soy Melissa, la asesora virtual pensada para negocios que quieren atender bien todo el día",
+                "Soy Melissa, la asesora virtual de este tipo de chat. Soy una IA hecha para responder, orientar y sostener conversaciones con criterio",
             ]
             capability_options = [
                 "Puedo responder clientes, explicar servicios, filtrar interesados, ubicar horarios, ayudar con citas y mantener conversaciones que se sientan naturales.",
@@ -21716,7 +21711,7 @@ class ConversationSimulator:
         scope_mode, effective_msg = _patient_message_scope(user_msg, clinic)
         if scope_mode == "meta":
             clinic_name = clinic.get("name", "la clínica")
-            return f"Melissa por acá, del equipo de {clinic_name} ||| dime qué te gustaría revisar"
+            return f"Hola, soy Melissa, la asesora virtual de {clinic_name} ||| dime qué te gustaría revisar"
         if scope_mode == "off_topic":
             return "eso se sale un poco de este chat ||| si quieres, te ayudo con servicios, horarios o citas"
         if scope_mode == "mixed" and effective_msg:
@@ -25907,6 +25902,7 @@ class OwnerStyleController:
             "register": register,
             "respectful": respectful,
             "no_emojis": no_emojis,
+            "lowercase_start": False,
         }
 
     def _seed_admin_defaults(self, bucket: Dict[str, Any]) -> Dict[str, Any]:
@@ -25953,9 +25949,9 @@ class OwnerStyleController:
                 "Si el admin pide tuteo, úsalo natural, sostenido y colombiano, sin mezclarlo con usted.",
             ]
         if not bucket.get("greeting_template"):
-            bucket["greeting_template"] = "Hola, soy Melissa, del equipo de {clinic_name}."
+            bucket["greeting_template"] = "Hola, soy Melissa, la asesora virtual de {clinic_name}"
         if not bucket.get("second_bubble_template"):
-            bucket["second_bubble_template"] = "Le ayudo con información, valoración y disponibilidad."
+            bucket["second_bubble_template"] = "Te ayudo con información, valoración y disponibilidad"
         if not bucket.get("max_bubbles"):
             bucket["max_bubbles"] = 3
         return bucket
@@ -26057,11 +26053,17 @@ class OwnerStyleController:
             "con clientes", "cuando te escriban", "cuando un paciente",
             "cuando un cliente", "al paciente", "al cliente", "a los leads",
             "con los pacientes", "con los clientes", "a pacientes", "a clientes",
+            "para pacientes", "para clientes", "para los pacientes", "para los clientes",
         ]
-        if any(marker in normalized for marker in admin_markers):
-            return "admin"
-        if any(marker in normalized for marker in patient_markers):
+        haystack = f" {normalized.strip()} "
+        def _contains_marker(marker: str) -> bool:
+            probe = f" {self._normalize_text(marker)} "
+            return probe in haystack
+
+        if any(_contains_marker(marker) for marker in patient_markers):
             return "patient"
+        if any(_contains_marker(marker) for marker in admin_markers):
+            return "admin"
         return "global"
 
     def detect_control_intent(self, text: str) -> bool:
@@ -26250,6 +26252,19 @@ class OwnerStyleController:
             applied.append(f"permití emojis en {scope}")
 
         if any(token in normalized for token in [
+            "minúscula al inicio", "minuscula al inicio", "sin mayúscula al inicio", "sin mayuscula al inicio",
+            "arranca en minúscula", "arranca en minuscula", "empieza en minúscula", "empieza en minuscula",
+        ]):
+            bucket["lowercase_start"] = True
+            applied.append(f"dejé {scope} con minúscula inicial cuando aplique")
+        elif any(token in normalized for token in [
+            "mayúscula al inicio", "mayuscula al inicio", "empieza con mayúscula", "empieza con mayuscula",
+            "arranca con mayúscula", "arranca con mayuscula", "primera en mayúscula", "primera en mayuscula",
+        ]):
+            bucket["lowercase_start"] = False
+            applied.append(f"dejé {scope} con mayúscula inicial por defecto")
+
+        if any(token in normalized for token in [
             "háblame de usted", "hablame de usted", "trátame de usted", "tratame de usted",
             "hablales de usted", "háblales de usted", "tratalos de usted", "trátalos de usted",
             "tratelos de usted", "trátelos de usted", "de usted con los pacientes",
@@ -26341,6 +26356,7 @@ class OwnerStyleController:
             "respectful",
             "no_emojis",
             "max_bubbles",
+            "lowercase_start",
         ):
             value = specific.get(key)
             if value not in (None, "", []):
@@ -26591,8 +26607,10 @@ class OwnerStyleController:
                 current = self._EMOJI_RE.sub("", current)
                 current = current.replace("¿", "").replace("¡", "")
             current = re.sub(r'\s+', ' ', current).strip(" ,;")
-            if current and current[0].islower():
+            if current and current[0].islower() and not merged.get("lowercase_start"):
                 current = current[0].upper() + current[1:]
+            elif current and current[0].isupper() and merged.get("lowercase_start"):
+                current = current[0].lower() + current[1:]
             if current:
                 cleaned_bubbles.append(current)
 

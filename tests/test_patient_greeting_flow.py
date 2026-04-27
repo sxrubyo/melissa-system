@@ -187,7 +187,8 @@ def test_normalize_first_patient_turn_repairs_low_quality_whatsapp_greeting() ->
     assert "asistente virtual" not in lowered
     assert "hoy?" not in lowered
     assert "botox" in lowered or "rellenos" in lowered
-    assert "melissa por acá" in lowered or "hola, melissa" in lowered
+    assert "hola, soy melissa" in lowered
+    assert "asesora virtual" in lowered
 
 
 def test_conversation_engine_identity_probe_for_whatsapp_stays_human() -> None:
@@ -267,5 +268,77 @@ def test_normalize_first_contact_response_drops_duplicate_intro_bubble() -> None
     )
 
     lowered = result.lower()
-    assert lowered.count("melissa por acá") + lowered.count("melissa por aca") == 1
+    assert lowered.count("hola, soy melissa") == 1
+    assert "asesora virtual" in lowered
     assert "botox lo manejan acá" in lowered or "botox lo manejan aca" in lowered
+
+
+def test_first_contact_intro_defaults_to_uppercase_virtual_advisor_voice() -> None:
+    module = load_melissa_module()
+
+    intro = module._first_contact_intro({"name": "la clínica"})
+
+    assert intro.startswith("Hola")
+    assert "asesora virtual" in intro.lower()
+    assert "del equipo de" not in intro.lower()
+    assert not intro.endswith(".")
+
+
+def test_identity_probe_bubbles_admit_virtual_role_without_robotic_copy() -> None:
+    module = load_melissa_module()
+    generator = module.ResponseGenerator.__new__(module.ResponseGenerator)
+    clinic = {"name": "la clínica", "sector": "estetica", "services": ["Botox", "Rellenos"]}
+    personality = types.SimpleNamespace(name="Melissa")
+
+    bubbles = generator._build_identity_probe_bubbles(clinic, personality, "quien eres")
+
+    joined = " ".join(bubbles).lower()
+    assert "asesora virtual" in joined
+    assert "recepcionista virtual" not in joined
+    assert "del equipo de" not in joined
+    assert " ia " in f" {joined} " or "inteligencia artificial" in joined
+    assert all(not bubble.strip().endswith(".") for bubble in bubbles)
+
+
+def test_conversation_engine_identity_probe_uses_virtual_advisor_voice() -> None:
+    from melissa_core.conversation_engine import ConversationEngine
+    from melissa_core.persona_registry import PersonaRegistry
+
+    core_root = MODULE_PATH.parent
+    registry = PersonaRegistry(core_root / "personas" / "melissa" / "base")
+    engine = ConversationEngine(registry)
+
+    result = engine.handle(
+        clinic={"name": "la clínica", "sector": "estetica", "persona_key": "estetica_whatsapp"},
+        user_msg="quien eres",
+        history=[],
+        is_admin=False,
+        channel="whatsapp",
+    )
+
+    joined = " ".join(result.bubbles).lower()
+    assert result.handled is True
+    assert "asesora virtual" in joined
+    assert "recepcionista virtual" not in joined
+    assert "del equipo de" not in joined
+
+
+def test_owner_style_controller_can_keep_lowercase_start_when_requested() -> None:
+    module = load_melissa_module()
+    controller = module.OwnerStyleController()
+    controller._loaded = True
+
+    result = controller.apply_instruction("para pacientes usa minúscula al inicio")
+
+    assert result["ok"] is True
+
+    rendered = controller.enforce_output(
+        "Hola, soy Melissa ||| Te ayudo con información",
+        is_admin=False,
+        first_turn=False,
+        clinic={"name": "la clínica"},
+        user_msg="hola",
+    )
+
+    first_bubble = rendered.split("|||")[0].strip()
+    assert first_bubble.startswith("hola")
