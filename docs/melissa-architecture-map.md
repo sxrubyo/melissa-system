@@ -30,10 +30,10 @@ Melissa es un runtime base para recepcionistas IA orientadas a WhatsApp y Telegr
   Contrato base de voz.
 - `personas/melissa/base/estetica_whatsapp.yaml`
   Override específico para estética/WhatsApp.
+- `melissa_core/prompt_ops.py`
+  Construcción del prompt compacto y del prompt largo del runtime.
 - `melissa.py`
-  Sigue concentrando el `prompt building` pesado del runtime:
-  - `_build_compact_system_prompt`
-  - `_build_system_prompt`
+  Sigue concentrando la orquestación de respuesta y la capa posterior al LLM:
   - `_apply_output_pipeline`
   - `_retry_until_human`
 
@@ -77,14 +77,15 @@ El principal cuello de botella de mantenimiento no es el runtime en sí, sino el
 - persona registry
 - conversation engine
 - first-turn helpers
+- prompt building
 - memoria corta v10
 
 ## Qué falta separar
 
 ### Fase 1
 
-- mover `prompt building` de `ResponseGenerator` a `melissa_core/prompt_ops.py`
-- dejar `ResponseGenerator` como orquestador, no como contenedor de prosa gigante
+- dejar `ResponseGenerator` como orquestador todavía más delgado
+- mover builders auxiliares de identidad/contexto que todavía viven dentro de `melissa.py`
 
 ### Fase 2
 

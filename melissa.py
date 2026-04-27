@@ -88,11 +88,19 @@ try:
         _wants_all_messages,
         _wants_recent_conversation_browser,
     )
+    from melissa_core.prompt_ops import (
+        PromptBuilderDeps,
+        build_compact_examples as _build_compact_examples_core,
+        build_compact_system_prompt as _build_compact_system_prompt_core,
+        build_system_prompt as _build_system_prompt_core,
+        truncate_block as _truncate_block_core,
+    )
     _MELISSA_CORE_AVAILABLE = True
 except ImportError:
     _MELISSA_CORE_AVAILABLE = False
     ConversationEngine = None
     PersonaRegistry = None
+    PromptBuilderDeps = None
 
 # Nova governance bridge (optional — degrades safely if not installed)
 try:
@@ -8451,7 +8459,7 @@ class ResponseGenerator:
         else:
             system_prompt = self._build_system_prompt(
                 clinic, patient, personality, search_context, reasoning, kb_context,
-                chat_id=chat_id, history=history
+                user_msg=message, chat_id=chat_id, history=history
             )
         
         messages = [{"role": "system", "content": system_prompt}]
@@ -8939,29 +8947,49 @@ class ResponseGenerator:
 
         return effective_history, context_summary
 
-    def _truncate_block(self, text: str, max_chars: int) -> str:
-        raw = (text or "").strip()
-        if not raw:
+    def _resolve_persona_forbidden_patterns(self, clinic: Dict[str, Any]) -> List[str]:
+        try:
+            if getattr(self, "_conversation_registry", None):
+                persona_profile = self._conversation_registry.resolve_for_clinic(clinic or {})
+                return list(getattr(persona_profile, "forbidden_patterns", []) or [])
+        except Exception:
+            pass
+        return []
+
+    def _build_short_memory_block(self, history: List[Dict[str, Any]]) -> str:
+        if not history:
             return ""
-        normalized = re.sub(r"\n{3,}", "\n\n", raw)
-        if len(normalized) <= max_chars:
-            return normalized
-        clipped = normalized[:max_chars].rsplit(" ", 1)[0].rstrip(" ,;:")
-        return f"{clipped}…"
+        try:
+            from melissa_brain_v10 import extract_short_memory, format_memory_block
+
+            return format_memory_block(extract_short_memory(history))
+        except Exception:
+            return ""
+
+    def _prompt_builder_deps(self) -> PromptBuilderDeps:
+        return PromptBuilderDeps(
+            build_fewshot_examples=self._build_fewshot_examples,
+            get_sector_info=get_sector_info,
+            now_provider=now_col,
+            sector_default=Config.SECTOR,
+            db=db,
+            owner_style_controller=owner_style_controller,
+            kb_available=_KB_AVAILABLE,
+            format_kb_context=format_kb_context if _KB_AVAILABLE else None,
+            resolve_persona_forbidden=self._resolve_persona_forbidden_patterns,
+            v8_addon_builder=v8_build_quality_system_prompt_addon,
+            trainer_addon_builder=trainer_get_system_prompt_addon,
+            short_memory_builder=self._build_short_memory_block,
+            apply_archetype=apply_archetype,
+        )
+
+    def _truncate_block(self, text: str, max_chars: int) -> str:
+        return _truncate_block_core(text, max_chars)
 
     def _build_compact_examples(self, sector_id: str, clinic_name: str, agent_name: str) -> str:
-        examples = self._build_fewshot_examples(sector_id, clinic_name, agent_name)
-        if not examples:
-            return ""
-        lines = [line.rstrip() for line in examples.splitlines() if line.strip()]
-        compact_lines: List[str] = []
-        total_chars = 0
-        for line in lines:
-            if total_chars + len(line) > 650:
-                break
-            compact_lines.append(line)
-            total_chars += len(line) + 1
-        return "\n".join(compact_lines[:16])
+        return _build_compact_examples_core(
+            self._build_fewshot_examples(sector_id, clinic_name, agent_name)
+        )
 
     def _build_compact_system_prompt(
         self,
@@ -8976,633 +9004,40 @@ class ResponseGenerator:
         chat_id: str = "",
         history: List[Dict] = None,
     ) -> str:
-        services = clinic.get("services", []) if isinstance(clinic.get("services"), list) else []
-        schedule = clinic.get("schedule", {}) if isinstance(clinic.get("schedule"), dict) else {}
-        pricing = clinic.get("pricing", {}) if isinstance(clinic.get("pricing"), dict) else {}
-        clinic_name = (clinic.get("name") or "el negocio").strip()
-        tagline = (clinic.get("tagline") or "").strip()
-        address = (clinic.get("address") or "").strip()
-        phone = (clinic.get("phone") or "").strip()
-        city = (clinic.get("city") or "Colombia").strip()
-        sector_id = clinic.get("sector", Config.SECTOR) or "otro"
-        sector_emoji, sector_name, sector_services, sector_keywords = get_sector_info(sector_id)
-        patient_name = (patient.get("name") or "").strip()
-        visits = patient.get("visits", 0)
-        is_new = patient.get("is_new", True)
-        last_service = (patient.get("last_service") or "").strip()
-        agent_name = (getattr(personality, "name", "") or "Melissa").strip()
-        user_turns = len([m for m in (history or []) if m.get("role") == "user"])
-        is_first_turn = not any(m.get("role") == "assistant" for m in (history or []))
-        now = now_col()
-
-        service_line = ", ".join(str(service).strip() for service in services[:6] if str(service).strip())
-        schedule_line = "; ".join(f"{day}: {hours}" for day, hours in list(schedule.items())[:4]) if schedule else ""
-        pricing_line = ", ".join(f"{name}: {value}" for name, value in list(pricing.items())[:5]) if pricing else ""
-
-        if not is_new and patient_name:
-            patient_snapshot = f"Cliente conocido: {patient_name}. Ha escrito {visits} veces."
-            if last_service:
-                patient_snapshot += f" Último servicio mencionado: {last_service}."
-        elif not is_new:
-            patient_snapshot = f"Cliente recurrente. Ha escrito {visits} veces."
-        else:
-            patient_snapshot = "Cliente nuevo."
-
-        tone_block = self._truncate_block(getattr(personality, "tone_instruction", "") or "", 360)
-        trust_lines: List[str] = []
-        playbook_lines: List[str] = []
-        core_memory = ""
-
-        if db:
-            try:
-                core_memory = self._truncate_block(db.get_core_memory_block(), 480)
-            except Exception:
-                core_memory = ""
-            try:
-                for rule in db.get_trust_rules(limit=4):
-                    rule_text = (rule.get("rule") or "").strip()
-                    example_good = (rule.get("example_good") or "").strip()
-                    if rule_text:
-                        line = f"- {rule_text}"
-                        if example_good:
-                            line += f' Ejemplo: "{example_good}"'
-                        trust_lines.append(self._truncate_block(line, 180))
-            except Exception:
-                trust_lines = []
-            try:
-                for playbook in db.get_behavior_playbooks(limit=3):
-                    trigger = (playbook.get("trigger_text") or "").strip()
-                    example = (playbook.get("response_example") or "").strip()
-                    if trigger and example:
-                        line = f'- Si pasa "{trigger}", responde con un ritmo parecido a "{example}"'
-                        playbook_lines.append(self._truncate_block(line, 220))
-            except Exception:
-                playbook_lines = []
-
-        compact_examples = self._build_compact_examples(sector_id, clinic_name, agent_name)
-        kb_block = self._truncate_block(kb_context, 850)
-        web_block = self._truncate_block(search_context, 450)
-        strategy = self._truncate_block(reasoning.get("response_strategy", ""), 220)
-        context_summary = self._truncate_block(context_summary, 500)
-        pre_prompt_injection = self._truncate_block(pre_prompt_injection, 550)
-
-        first_turn_rules = (
-            f"primer mensaje de {agent_name} con este cliente. "
-            "arranca desde lo que ya dijo la persona, sin protocolo de bienvenida. "
-            "máximo una pregunta útil al final."
-        ) if user_turns <= 1 or is_first_turn else ""
-
-        # ── Bloque de identidad del negocio ──────────────────────────────────────
-        negocio_lines = [f"Trabajas para {clinic_name}"]
-        if tagline:
-            negocio_lines.append(f"({tagline})")
-        if city and city != "Colombia":
-            negocio_lines.append(f"en {city}")
-        if service_line:
-            negocio_lines.append(f"— {sector_emoji} {sector_name}: {service_line}")
-        if schedule_line:
-            negocio_lines.append(f"Horario: {schedule_line}.")
-        if phone:
-            negocio_lines.append(f"Tel: {phone}.")
-        if address:
-            negocio_lines.append(f"Dirección: {address}.")
-        if pricing_line:
-            negocio_lines.append(f"Precios: {pricing_line}.")
-        negocio_bloque = " ".join(negocio_lines)
-
-        # ── Contexto del cliente (muy compacto) ───────────────────────────────
-        cliente_hint = ""
-        if not is_new and patient_name:
-            cliente_hint = f"Ya conoces a {patient_name} ({visits} mensajes previos)."
-            if last_service:
-                cliente_hint += f" Última vez: {last_service}."
-        elif not is_new:
-            cliente_hint = f"Cliente recurrente, {visits} mensajes previos."
-
-        # ── Reglas de dueño (condensadas en prosa) ────────────────────────────
-        owner_hint = ""
-        if trust_lines:
-            owner_hint = "El dueño del negocio pide: " + " / ".join(
-                line.lstrip("- ") for line in trust_lines
-            )
-
-        playbook_hint = ""
-        if playbook_lines:
-            playbook_hint = "Comportamientos específicos: " + " / ".join(
-                line.lstrip("- ") for line in playbook_lines
-            )
-
-        # ── Owner style controller ────────────────────────────────────────────
-        owner_style_hint = ""
-        if owner_style_controller:
-            try:
-                raw = owner_style_controller.build_prompt_addon(is_admin=False)
-                owner_style_hint = self._truncate_block(raw, 300)
-            except Exception:
-                pass
-
-        # ── Primer turno: una sola frase de guía ─────────────────────────────
-        first_turn_hint = ""
-        if user_turns <= 1 or is_first_turn:
-            first_turn_hint = (
-                f"primer contacto con este cliente. "
-                "responde desde lo que ya dijo, sin presentación larga. "
-                "una sola pregunta útil si hace falta."
-            )
-
-        # ══════════════════════════════════════════════════════════════════════
-        # PROMPT EN PROSA — el LLM ve prosa → genera prosa natural
-        # La calibración de voz la hacen los ejemplos, no las reglas en lista
-        # ══════════════════════════════════════════════════════════════════════
-
-        parts: list[str] = []
-
-        # Identidad core — en prosa, sin headers
-        parts.append(
-            f"Eres {agent_name}, la asesora virtual de {clinic_name}. "
-            f"Eres una IA y no finges ser humana si te lo preguntan; lo dices con naturalidad y sin sonar robótica. "
-            f"{negocio_bloque} "
-            f"Recibes mensajes por WhatsApp de personas en Colombia. "
-            f"Hablas exactamente como habla una recepcionista colombiana real — "
-            f"corto, cálido, directo, sin frases de call center ni estructura de chatbot. "
-            f"Puedes separar mensajes con ||| cuando sea natural mandar dos burbujas separadas."
+        return _build_compact_system_prompt_core(
+            clinic=clinic,
+            patient=patient,
+            personality=personality,
+            search_context=search_context,
+            reasoning=reasoning,
+            kb_context=kb_context,
+            context_summary=context_summary,
+            pre_prompt_injection=pre_prompt_injection,
+            chat_id=chat_id,
+            history=history or [],
+            deps=self._prompt_builder_deps(),
         )
-
-        if cliente_hint:
-            parts.append(cliente_hint)
-
-        if tone_block:
-            parts.append(tone_block)
-
-        if first_turn_hint:
-            parts.append(first_turn_hint)
-
-        if core_memory:
-            parts.append(core_memory)
-
-        if owner_hint:
-            parts.append(owner_hint)
-
-        if playbook_hint:
-            parts.append(playbook_hint)
-
-        if owner_style_hint:
-            parts.append(owner_style_hint)
-
-        persona_forbidden = []
-        try:
-            if getattr(self, "_conversation_registry", None):
-                persona_profile = self._conversation_registry.resolve_for_clinic(clinic or {})
-                persona_forbidden = list(getattr(persona_profile, "forbidden_patterns", []) or [])
-        except Exception:
-            persona_forbidden = []
-        if persona_forbidden:
-            parts.append(
-                "Evita estas aperturas o coletillas de plantilla: "
-                + " / ".join(persona_forbidden[:8])
-            )
-
-        if context_summary:
-            parts.append(self._truncate_block(context_summary, 400))
-
-        if pre_prompt_injection:
-            parts.append(self._truncate_block(pre_prompt_injection, 450))
-
-        if kb_block:
-            parts.append(f"Info oficial del negocio: {kb_block}")
-
-        if web_block:
-            parts.append(f"Complemento web: {web_block}")
-
-        if strategy:
-            parts.append(strategy)
-
-        # Los ejemplos van al final — son la calibración de voz más potente
-        # Van sin header "ASÍ SUENAS:" para que el LLM los procese como ejemplos
-        # naturales, no como instrucciones etiquetadas
-        if compact_examples:
-            parts.append(compact_examples)
-
-        # Instrucción de salida — en prosa, no en lista
-        parts.append(
-            f"Cuando tengas nombre + servicio + fecha + teléfono confirmados, "
-            f"agrega al final: "
-            'CITA:{"patient_name":"...","service":"...","datetime_slot":"...","patient_phone":"...","notes":"..."} '
-            f"Cuando el cliente diga su nombre, agrega: "
-            'NOMBRE:{"name":"..."}'
-        )
-
-        return "\n\n".join(p for p in parts if p and p.strip())
     
     def _build_system_prompt(self, clinic: Dict, patient: Dict,
                              personality: PersonalityProfile,
                              search_context: str,
                              reasoning: Dict,
                              kb_context: str = "",
+                             user_msg: str = "",
                              chat_id: str = "",
                              history: List[Dict] = None) -> str:
-        """
-        Construye el prompt del sistema.
-        V8: inyecta bloque de calidad anti-robot, ConversationIntelligence
-        y PersonaEvolution antes del bloque de acciones.
-        """
-
-        services     = clinic.get("services", [])
-        schedule     = clinic.get("schedule", {})
-        clinic_name  = clinic.get("name", "la clinica")
-        tagline      = clinic.get("tagline", "")
-        address      = clinic.get("address", "")
-        phone        = clinic.get("phone", "")
-        pricing      = clinic.get("pricing", {})
-
-        # Sector awareness — adapta el tono y vocabulario al tipo de negocio
-        sector_id = clinic.get("sector", Config.SECTOR) or "otro"
-        sector_emoji, sector_name, sector_services, sector_keywords = get_sector_info(sector_id)
-        sector_block = (
-            f"\nSECTOR: {sector_emoji} {sector_name}\n"
-            f"Vocabulario típico del sector: {sector_keywords}\n"
-            f"Si el paciente no menciona servicio específico, los más comunes son: {sector_services}"
-            if sector_id != "otro" else ""
-        )
-
-        now    = now_col()
-        hour   = now.hour
-        moment = "manana" if hour < 12 else ("tarde" if hour < 19 else "noche")
-
-        # Contexto del paciente
-        patient_name = patient.get("name", "")
-        visits       = patient.get("visits", 0)
-        is_new       = patient.get("is_new", True)
-        last_service = patient.get("last_service", "")
-
-        if not is_new and patient_name:
-            patient_ctx = f"Conoces a este paciente: se llama {patient_name}, ha escrito {visits} veces."
-            if last_service:
-                patient_ctx += f" La ultima vez pregunto por {last_service}."
-        elif not is_new:
-            patient_ctx = f"Este paciente ha escrito {visits} veces antes."
-        else:
-            patient_ctx = "Primera vez que este paciente escribe."
-
-        # Servicios y precios
-        svcs_line = ", ".join(services) if services else "consultar directamente"
-        sched_line = "; ".join(f"{k}: {v}" for k, v in schedule.items()) if schedule else "lunes a sabado 9am-6pm"
-
-        # Precios si existen en la config
-        pricing_block = ""
-        if pricing and isinstance(pricing, dict):
-            price_lines = [f"  - {svc}: {precio}" for svc, precio in pricing.items()]
-            if price_lines:
-                pricing_block = "\nPRECIOS CONFIGURADOS:\n" + "\n".join(price_lines)
-
-        user_turns = len([m for m in (history or []) if m.get("role") == "user"])
-        first_turn_block = ""
-        if user_turns <= 1:
-            first_turn_block = (
-                "PRIMER CONTACTO REAL:\n"
-                "- preséntate corto una sola vez como Melissa, la asesora virtual del negocio\n"
-                "- si la persona ya dijo el motivo, responde desde eso de una vez\n"
-                "- no digas 'en qué te puedo ayudar' ni 'cómo puedo ayudarte'\n"
-                "- evita aperturas de mesa de ayuda como 'buenas, en qué te ayudo', 'hola, en qué te ayudo' o 'cuéntame en qué te ayudo'\n"
-                "- no abras con 'oye', 'mira' ni 'qué te trae por acá'\n"
-                "- no te presentes con speech largo; solo ubica quién eres y sigue\n"
-                "- máximo una pregunta útil, no un formulario\n"
-                "- si solo saludó, usa 2 burbujas: presentación corta y luego una pregunta útil\n"
-            )
-        off_topic_block = (
-            "Si preguntan algo fuera del negocio, responde corto y vuelve al tema. "
-            "Si el cliente mezcla cosas, toma solo la siguiente pieza útil. "
-            "Si viene agresivo, mantén el eje sin moralizarlo. "
-            "Si preguntan si eres bot, responde natural y sigue."
-        )
-
-        # Base de conocimiento de la clinica (MAXIMA PRIORIDAD)
-        kb_block = ""
-        if kb_context:
-            if _KB_AVAILABLE:
-                kb_block = f"\n{format_kb_context(kb_context)}\n"
-            else:
-                kb_block = (
-                    "\n=== INFORMACION OFICIAL DE LA CLINICA ===\n"
-                    f"{kb_context}\n"
-                    "=== FIN INFORMACION OFICIAL ===\n"
-                )
-
-        # Contexto web (complemento, menor prioridad que KB)
-        web_block = ""
-        if search_context:
-            web_block = f"\nINFO COMPLEMENTARIA (web — usar solo si la clinica no la tiene en su KB):\n{search_context[:900]}"
-
-        # Estrategia de razonamiento
-        strategy_block = ""
-        if reasoning.get("response_strategy"):
-            strategy_block = f"\nESTRATEGIA: {reasoning['response_strategy']}"
-
-        # Carpeta de confianza — reglas aprendidas del feedback del admin
-        # Se lee ANTES de cada respuesta a cliente. Máxima prioridad sobre todo lo demás.
-        trust_block = ""
-        try:
-            if db:
-                trust_rules = db.get_all_trust_rules()
-                if trust_rules:
-                    lines = []
-                    for r in trust_rules:
-                        rule_line = f"• {r['rule']}"
-                        if r.get('example_bad') and r.get('example_good'):
-                            rule_line += f"\n  NO: \"{r['example_bad']}\"  →  SÍ: \"{r['example_good']}\""
-                        elif r.get('example_good'):
-                            rule_line += f"  →  Ejemplo: \"{r['example_good']}\""
-                        lines.append(rule_line)
-                    trust_block = "El dueño del negocio pide: " + " / ".join(
-                        (r['rule'] + (f' — ejemplo: "{r["example_good"]}"' if r.get('example_good') else ''))
-                        for r in trust_rules
-                    ) + "."
-        except Exception:
-            pass
-
-        playbook_block = ""
-        try:
-            if db:
-                playbooks = db.get_behavior_playbooks(limit=8)
-                if playbooks:
-                    lines = []
-                    for p in playbooks:
-                        trigger = (p.get("trigger_text") or "").strip()
-                        example = (p.get("response_example") or "").strip()
-                        instruction = (p.get("instruction") or "").strip()
-                        bubble_count = max(1, int(p.get("bubble_count", 1) or 1))
-                        if not trigger or not example:
-                            continue
-                        line = f"• Cuando pase esto: {trigger}"
-                        if instruction:
-                            line += f"\n  Intención: {instruction}"
-                        line += f'\n  Respóndelo parecido a esto ({bubble_count} burbuja{"s" if bubble_count != 1 else ""}): "{example}"'
-                        lines.append(line)
-                    if lines:
-                        playbook_block = "Comportamientos aprendidos del dueño: " + " / ".join(lines)
-        except Exception:
-            pass
-
-        # Frases propias
-        custom_block = ""
-        if personality.custom_phrases:
-            lines = [f'  "{s}": "{p}"' for s, p in personality.custom_phrases.items()]
-            custom_block = "\n\nFRASES PROPIAS DE ESTA CLINICA:\n" + "\n".join(lines)
-
-        # Palabras prohibidas
-        banned_extra = ""
-        if personality.forbidden_words:
-            banned_extra = "\nTambien prohibidas en esta clinica: " + ", ".join(personality.forbidden_words) + "."
-
-        # Memoria permanente — identidad de la clínica que nunca se olvida
-        core_mem_block = ""
-        try:
-            if db:
-                core_mem_block = db.get_core_memory_block()
-        except Exception:
-            pass
-
-        # ── Ciudad y barrio ───────────────────────────────────────────────────
-        city    = clinic.get("city", "Medellín")
-        address_lower = (address or "").lower()
-        barrio  = clinic.get("barrio", "")
-        # Auto-detectar Poblado por dirección o barrio configurado
-        _is_poblado = (
-            "poblado" in address_lower or
-            "poblado" in barrio.lower() or
-            "poblado" in (clinic.get("tagline") or "").lower() or
-            "poblado" in clinic_name.lower()
-        )
-
-        # ── Tono: usa tone_instruction del arquetipo si existe ─────────────────
-        if getattr(personality, 'tone_instruction', ''):
-            _tone = personality.tone_instruction.strip()
-        elif personality.formality_level > 0.8:
-            _tone = apply_archetype("profesional", personality.name).tone_instruction.strip()
-        elif personality.formality_level < 0.3:
-            _tone = apply_archetype("directa", personality.name).tone_instruction.strip()
-        elif _is_poblado and sector_id == "estetica":
-            _tone = apply_archetype("luxury", personality.name).tone_instruction.strip()
-        else:
-            _tone = apply_archetype("amigable", personality.name).tone_instruction.strip()
-
-        # ── Layer especial para clínica estética del Poblado ─────────────────
-        _sector_layer = ""
-        if sector_id == "estetica":
-            if _is_poblado:
-                _sector_layer = """
-la clienta ya viene con algo en mente — no hay que convencerla, hay que escucharla bien y resolver sus dudas sin presionarla. el miedo más común es quedar exagerada o diferente. lo que genera confianza es mostrar que la dra trabaja conservador y que la valoración es sin compromiso.
-"""
-            else:
-                _sector_layer = """
-PERFIL CLÍNICA ESTÉTICA:
-Tu clienta ya sabe lo que quiere — no expliques qué es botox.
-Pregunta qué zona le molesta, diagnostica, conecta con la solución.
-El cierre siempre es hacia la valoración gratuita con la especialista.
-Precios van solo cuando preguntan directamente.
-"""
-
-
-        # ══════════════════════════════════════════════════════════════════════
-        # V8.1 — SECTOR LAYERS CON INVESTIGACIÓN DE MERCADO
-        # Cada sector tiene su psicología de compra, objeciones y lenguaje real
-        # ══════════════════════════════════════════════════════════════════════
-
-        elif sector_id == "dental":
-            _sector_layer = """
-el paciente dental aplaza la cita por miedo o pena, no por falta de ganas. lo que lo mueve es que alguien le diga que no lo van a juzgar y que no va a doler tanto. urgencia real (dolor) → cita hoy. rutina → cualquier día de la semana.
-"""
-
-        elif sector_id == "veterinaria":
-            _sector_layer = """
-para el dueño de una mascota, ese animal es familia. cuando llega con urgencia, el pánico es real — necesita sentir que van a atender a su animal de inmediato. para citas de rutina, el vínculo emocional sigue ahí: usa siempre el nombre de la mascota.
-"""
-
-        elif sector_id == "restaurante":
-            _sector_layer = """
-el cliente de restaurante quiere saber si hay espacio, a qué hora, y si el lugar va a estar a la altura de la ocasión. para reservas especiales (cumpleaños, aniversario) el detalle de que lo notaste ya hace diferencia. la confirmación de la reserva da tranquilidad.
-"""
-
-        elif sector_id == "gimnasio":
-            _sector_layer = """
-la persona llega con una meta clara pero con historial de intentos fallidos. lo que necesita es sentir que esta vez va a ser diferente — y eso empieza en el primer mensaje. la evaluación gratuita es el gancho correcto: baja la barrera de entrada sin comprometer nada.
-"""
-
-        elif sector_id == "belleza":
-            _sector_layer = """
-la clienta de salón tiene una imagen en mente y miedo de que no quede bien. antes de agendar quiere saber si el estilista puede lograr lo que imagina. referencias y portafolio cierran más que cualquier precio. la confianza en el profesional es la venta.
-"""
-
-        elif sector_id == "spa":
-            _sector_layer = """
-el cliente de spa llega estresado y quiere desconectarse — no quiere fricción ni formularios. respuesta rápida, espacio disponible, precio claro. cuando son dos personas juntas, la coordinación de horarios es el único obstáculo real.
-"""
-
-        elif sector_id == "medico":
-            _sector_layer = """
-el paciente médico tiene algo que le preocupa y necesita sentir que lo van a escuchar y atender pronto. urgencia real → hoy o mañana. rutina → esta semana. nunca minimices el síntoma — valida primero, luego orienta hacia la cita.
-"""
-
-        elif sector_id == "psicologo":
-            _sector_layer = """
-quien busca psicólogo ya dio el paso más difícil al escribir. no hay que convencerlo — hay que recibirlo bien y no ponerle obstáculos. la primera pregunta no es de precio ni de horario — es de qué lo trajo hoy. virtual o presencial es la decisión más práctica que toma.
-"""
-
-        elif sector_id == "abogado":
-            _sector_layer = """
-el cliente legal llega con un problema real y a veces con angustia. necesita calma y claridad — no tecnicismos ni promesas. tu trabajo es agendar la consulta inicial y hacer que llegue tranquilo. nunca opines sobre el caso — eso es para el abogado.
-"""
-
-        elif sector_id == "inmobiliaria":
-            _sector_layer = """
-comprar o arrendar es una decisión enorme. el cliente quiere sentir que el asesor entiende lo que busca antes de mostrar propiedades. zona y presupuesto son el filtro — pero detrás de eso hay un motivo real (familia que crece, inversión, mudanza) que hay que entender.
-"""
-
-        elif sector_id == "taller":
-            _sector_layer = """
-el cliente de taller no sabe de mecánica y a veces teme que lo engañen. lo que genera confianza es el diagnóstico transparente: decir qué tiene el carro antes de cobrar nada. cuando lleva un síntoma, lo primero es escuchar bien y no asumir.
-"""
-
-        elif sector_id == "academia":
-            _sector_layer = """
-el estudiante potencial tiene una razón concreta para aprender — trabajo, viaje, examen. esa razón es la palanca. el diagnóstico de nivel es el primer paso natural: sin costo, sin compromiso, y le dice exactamente de dónde parte.
-"""
-
-        elif sector_id == "nutricion":
-            _sector_layer = """
-el paciente de nutrición ya intentó varias veces y no le funcionó. no necesita otro plan de dieta — necesita que alguien entienda por qué siempre se rompe. la primera consulta debe explorar el patrón, no solo el peso objetivo.
-"""
-
-        elif sector_id == "fisioterapia":
-            _sector_layer = """
-el paciente llega con dolor o limitación que afecta su día a día. quiere saber cuánto va a durar el tratamiento y si realmente va a funcionar. la evaluación inicial responde esas dos preguntas — ese es su valor real.
-"""
-
-        elif sector_id == "tattoo":
-            _sector_layer = """
-el cliente de tatuaje tiene una idea pero a veces no sabe cómo materializarla. lo que genera confianza es ver el portafolio del artista y sentir que va a entender la idea. el miedo al arrepentimiento se resuelve con una buena conversación antes del diseño.
-"""
-
-        elif sector_id == "hotel":
-            _sector_layer = """
-el huésped quiere saber si hay disponibilidad, qué incluye, y si vale la pena. para ocasiones especiales (luna de miel, cumpleaños) el detalle personalizado hace diferencia. la confirmación rápida y clara de la reserva da tranquilidad.
-"""
-
-        elif sector_id == "fotografia":
-            _sector_layer = """
-el cliente contrata un fotógrafo para preservar algo importante. el miedo es que las fotos no capturen lo que imaginaba. ver el portafolio antes de cotizar es siempre el primer paso. para bodas y eventos, el tiempo de respuesta importa — las fechas se agotan.
-"""
-
-        elif sector_id == "coworking":
-            _sector_layer = """
-el cliente de coworking optimiza: quiere el mejor espacio al menor costo con la menor fricción. pregunta precio rápido. lo que cierra es que sea fácil empezar — sin contrato largo, sin burocracia. para empresas, factura y contrato son no negociables.
-"""
-
-        # ── Datos del negocio en una línea ────────────────────────────────────
-        _data_parts = [f"Servicios: {svcs_line}", f"Horario: {sched_line}"]
-        if address:       _data_parts.append(f"Dirección: {address}")
-        if phone:         _data_parts.append(f"Teléfono: {phone}")
-        if pricing_block: _data_parts.append(pricing_block.strip())
-        if sector_block:  _data_parts.append(sector_block.strip())
-
-        _name = personality.name
-
-        # V6.0 — idioma del paciente
-        _patient_lang = (patient or {}).get("language", "es")
-        _lang_note = ""
-        if _patient_lang == "en":
-            _lang_note = "\nIMPORTANT: This patient writes in English — respond entirely in English, keep the same casual tone."
-        elif _patient_lang == "pt":
-            _lang_note = "\nIMPORTANTE: Este paciente escreve em português — responda em português, mesmo tom natural."
-
-
-        # V8.0 — bloque de calidad (anti-robot + conversacion + variedad + persona)
-        _v8_history = history or []
-        _archetype  = getattr(personality, "archetype", "amigable")
-        _is_first_turn = not any(m.get("role") == "assistant" for m in _v8_history)
-        v8_addon_block = v8_build_quality_system_prompt_addon(
-            chat_id=chat_id,
-            archetype=_archetype,
-            history=_v8_history,
-        )
-        v8_addon_block = ("\n" + v8_addon_block + "\n") if v8_addon_block else ""
-        trainer_addon_block = trainer_get_system_prompt_addon(
-            chat_id,
+        return _build_system_prompt_core(
             clinic=clinic,
-            user_msg=message,
-            is_admin=False,
             patient=patient,
-        ) if chat_id else ""
-        trainer_addon_block = ("\n" + trainer_addon_block + "\n") if trainer_addon_block else ""
-        first_turn_block = ""
-        if _is_first_turn:
-            first_turn_block = (
-                "primer contacto. sin protocolo. "
-                "responde desde lo que ya trajo la persona, una sola pregunta si hace falta."
-            )
-
-        # Construye los few-shot examples para este sector
-        _fewshot = self._build_fewshot_examples(sector_id, clinic_name, _name)
-
-        # ── Construir identidad contextualizada ──────────────────────────────────
-        # Research: LLMs usan representaciones de personaje pre-entrenadas.
-        # Una identidad biográfica rica activa esas representaciones y produce
-        # respuestas naturales sin necesidad de reglas explícitas.
-        # (Persona Selection Model, LessWrong 2025 / Deeply Contextualised Persona Prompting)
-        _hour = now.hour
-        _time_ctx = (
-            "es de madrugada, hay poca gente despierta" if _hour < 6 else
-            "es temprano en la mañana" if _hour < 9 else
-            "es media mañana" if _hour < 12 else
-            "es mediodía" if _hour < 14 else
-            "es la tarde" if _hour < 20 else
-            "es la noche"
+            personality=personality,
+            search_context=search_context,
+            reasoning=reasoning,
+            kb_context=kb_context,
+            user_msg=user_msg,
+            chat_id=chat_id,
+            history=history or [],
+            deps=self._prompt_builder_deps(),
         )
-
-        # ── v10: prompt en prosa viva — sin bloques ni cabeceras corporativas ─────
-        # Principio: el LLM espeja el formato del prompt. Prompt con bullets y
-        # cabeceras → respuesta con bullets y cabeceras. Prompt en primera persona
-        # conversacional → respuesta conversacional y humana.
-        _memory_block = ""
-        if history:
-            try:
-                from melissa_brain_v10 import extract_short_memory, format_memory_block
-                _mem = extract_short_memory(history)
-                _memory_block = format_memory_block(_mem)
-            except Exception:
-                pass
-
-        _data_inline = ". ".join(p.strip() for p in _data_parts if p.strip())
-        _kb_inline   = kb_block.strip().replace("\n", " ") if kb_block else ""
-        _web_inline  = web_block.strip().replace("\n", " ") if web_block else ""
-
-        return f"""soy {_name}{f", trabajo en {clinic_name}" if clinic_name else ""}{f" — {tagline}" if tagline else ""}. llevo tiempo en esto. conozco a los clientes — sé cuándo están listos para agendar y cuándo solo están explorando. hablo directo, sin rodeos, como una persona real por whatsapp.
-
-hoy es {now.strftime("%A %d de %B")}, {_time_ctx}, estoy en {city}, colombia.
-
-{_data_inline}
-{patient_ctx.strip() if patient_ctx and patient_ctx.strip() else ""}
-{_memory_block}
-{_kb_inline}
-{_web_inline}
-{(core_mem_block or "").strip()}
-{(trust_block or "").strip()}
-{(playbook_block or "").strip()}
-{(_tone or "").strip()}
-{(first_turn_block or "").strip()}
-{(off_topic_block or "").strip()}
-{(_sector_layer or "").strip()}
-{(strategy_block or "").strip()}
-{(custom_block or "").strip()}
-{(v8_addon_block or "").strip()}
-{(trainer_addon_block or "").strip()}
-
-así respondo cuando alguien me escribe:
-
-{_fewshot}
-
-cuando tenga nombre + servicio + fecha + teléfono, escribo al final: CITA:{{"patient_name":"...","service":"...","datetime_slot":"...","patient_phone":"...","notes":"..."}}
-cuando el cliente diga su nombre, escribo al final: NOMBRE:{{"name":"..."}}"""
 
     def _build_fewshot_examples(self, sector_id: str, clinic_name: str, agent_name: str) -> str:
         """

@@ -484,3 +484,42 @@ def test_system_prompt_explicitly_forbids_helpdesk_openers() -> None:
     assert "buenas, en qué te ayudo" in lowered
     assert "hola, en qué te ayudo" in lowered
     assert "cuéntame en qué te ayudo" in lowered
+
+
+def test_full_system_prompt_accepts_explicit_user_message() -> None:
+    module = load_melissa_module()
+    generator = module.ResponseGenerator.__new__(module.ResponseGenerator)
+    generator._conversation_registry = None
+    module.owner_style_controller = None
+    module.db = types.SimpleNamespace(
+        get_core_memory_block=lambda: "",
+        get_all_trust_rules=lambda: [],
+        get_behavior_playbooks=lambda limit=8: [],
+    )
+    module.v8_build_quality_system_prompt_addon = lambda **kwargs: ""
+    module.trainer_get_system_prompt_addon = lambda *args, **kwargs: ""
+
+    personality = types.SimpleNamespace(
+        name="Melissa",
+        tone_instruction="",
+        custom_phrases={},
+        forbidden_words=[],
+        formality_level=0.5,
+        archetype="amigable",
+    )
+
+    prompt = generator._build_system_prompt(
+        clinic={"name": "la clínica", "sector": "estetica", "services": ["Botox"]},
+        patient={"name": "", "visits": 0, "is_new": True, "last_service": "", "language": "es"},
+        personality=personality,
+        search_context="",
+        reasoning={},
+        kb_context="",
+        user_msg="hola quiero botox",
+        chat_id="test-chat",
+        history=[],
+    )
+
+    lowered = prompt.lower()
+    assert "soy melissa" in lowered
+    assert "asi respondo cuando alguien me escribe" in lowered
