@@ -11,6 +11,8 @@ const packageVersion = String(metadata.version || "").trim();
 const melissaHome = process.env.MELISSA_HOME || path.join(os.homedir(), ".melissa");
 const repoDir = path.join(melissaHome, "repo");
 const runtimeDir = path.join(melissaHome, "runtime");
+const workspaceConfigPath = path.join(melissaHome, "config.json");
+const sharedTelegramRoutesPath = path.join(melissaHome, "shared_telegram_routes.json");
 const entrypoint = path.join(repoDir, "melissa_cli.py");
 
 const SKIP_NAMES = new Set([
@@ -161,7 +163,39 @@ function ensureRuntime() {
 
 function bootstrapFromPackage() {
   status(`Sincronizando Melissa ${packageVersion} en ${melissaHome}...`);
+  ensureDir(melissaHome);
   syncTree(packageRoot, repoDir);
+  if (!fs.existsSync(workspaceConfigPath)) {
+    fs.writeFileSync(
+      workspaceConfigPath,
+      JSON.stringify(
+        {
+          owner_name: "",
+          default_business_name: "",
+          default_sector: "",
+          default_platform: "telegram",
+          public_base_url: "",
+          telegram_token: "",
+          telegram_shared: false,
+          llm_keys: {},
+          search_keys: {},
+          meta: {},
+          nova: {},
+          omni: {},
+          agent: {
+            display_name: "Melissa",
+            role: "asesora virtual",
+            prompt_master: "",
+          },
+        },
+        null,
+        2
+      )
+    );
+  }
+  if (!fs.existsSync(sharedTelegramRoutesPath)) {
+    fs.writeFileSync(sharedTelegramRoutesPath, JSON.stringify({ default_instance: "", routes: {} }, null, 2));
+  }
   ensureDir(path.join(melissaHome, "instances"));
   ensureRuntime();
 }
@@ -193,7 +227,8 @@ function execMelissa(argv) {
       INSTANCES_DIR: process.env.INSTANCES_DIR || path.join(melissaHome, "instances"),
       MELISSA_BACKUPS: process.env.MELISSA_BACKUPS || path.join(melissaHome, "backups"),
       MELISSA_SHARED_TELEGRAM_ROUTES:
-        process.env.MELISSA_SHARED_TELEGRAM_ROUTES || path.join(repoDir, "shared_telegram_routes.json"),
+        process.env.MELISSA_SHARED_TELEGRAM_ROUTES || sharedTelegramRoutesPath,
+      MELISSA_WORKSPACE_CONFIG: process.env.MELISSA_WORKSPACE_CONFIG || workspaceConfigPath,
     }
   );
   if (typeof result.status === "number") {

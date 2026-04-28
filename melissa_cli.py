@@ -14,7 +14,7 @@ Sectores soportados:
 
 Comandos:
   melissa install           Instalar CLI globalmente (hazlo primero)
-  melissa init              Verificar configuración del sistema
+  melissa init              Primer setup guiado del producto
   melissa new               Crear instancia para un cliente (wizard)
   melissa list              Ver todas las instancias
   melissa dashboard         Panel en tiempo real
@@ -26,7 +26,7 @@ Comandos:
   melissa logs [n]          Logs en tiempo real
   melissa restart [n]       Reiniciar (o 'all')
   melissa webhooks [n]      Ver/reconfigurar webhook de Telegram
-  melissa config [n]        Editar configuración
+  melissa config [n]        Hub de configuración o edición de instancia
   melissa guide             Guía completa de operación
   melissa doctor            Diagnóstico del sistema
   melissa upgrade           Actualizar + propagar a todos los clientes
@@ -152,12 +152,13 @@ except ImportError:
 # ══════════════════════════════════════════════════════════════════════════════
 # CONFIGURACIÓN
 # ══════════════════════════════════════════════════════════════════════════════
-VERSION = "8.0.1"
-MELISSA_DIR = os.getenv("MELISSA_DIR", "/home/ubuntu/melissa")
-INSTANCES_DIR = os.getenv("INSTANCES_DIR", "/home/ubuntu/melissa-instances")
+VERSION = "8.0.2"
+MELISSA_HOME = os.getenv("MELISSA_HOME", str(Path.home() / ".melissa"))
+MELISSA_DIR = os.getenv("MELISSA_DIR", str(Path(__file__).resolve().parent))
+INSTANCES_DIR = os.getenv("INSTANCES_DIR", str(Path(MELISSA_HOME) / "instances"))
 NOVA_DIR = os.getenv("NOVA_DIR", "/home/ubuntu/nova-os")
 BACKUP_DIR = Path(os.getenv("MELISSA_BACKUPS", Path.home() / "melissa-backups"))
-CACHE_DIR = Path.home() / ".melissa" / "cache"
+CACHE_DIR = Path(MELISSA_HOME) / "cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 OMNI_PORT = int(os.getenv("OMNI_PORT", "9001"))
@@ -171,8 +172,9 @@ CADDY_DIR      = "/home/ubuntu/xus-https"
 CADDYFILE_PATH = "/home/ubuntu/xus-https/Caddyfile"
 CADDY_DOCKER_GW = os.getenv("CADDY_DOCKER_GW", "172.28.0.1")  # gateway Docker→host
 SHARED_TELEGRAM_ROUTES = Path(
-    os.getenv("MELISSA_SHARED_TELEGRAM_ROUTES", f"{MELISSA_DIR}/shared_telegram_routes.json")
+    os.getenv("MELISSA_SHARED_TELEGRAM_ROUTES", f"{MELISSA_HOME}/shared_telegram_routes.json")
 )
+WORKSPACE_CONFIG_PATH = Path(os.getenv("MELISSA_WORKSPACE_CONFIG", f"{MELISSA_HOME}/config.json"))
 
 # PATCH v1 — 2026-04-16 — unificar runtime compartido para clone/new/sync
 SYNC_RUNTIME_FILES = [
@@ -779,6 +781,144 @@ def update_env_key(path, key, val):
         warn(f".env no actualizado: {e}")
 
 
+def workspace_defaults() -> Dict[str, Any]:
+    return {
+        "owner_name": "",
+        "default_business_name": "",
+        "default_sector": "",
+        "default_platform": "telegram",
+        "public_base_url": "",
+        "telegram_token": "",
+        "telegram_shared": False,
+        "llm_keys": {
+            "GROQ_API_KEY": "",
+            "GEMINI_API_KEY": "",
+            "GEMINI_API_KEY_2": "",
+            "GEMINI_API_KEY_3": "",
+            "GEMINI_API_KEY_4": "",
+            "GEMINI_API_KEY_5": "",
+            "GEMINI_API_KEY_6": "",
+            "GEMINI_API_KEY_7": "",
+            "OPENROUTER_API_KEY": "",
+            "OPENAI_API_KEY": "",
+        },
+        "search_keys": {
+            "SERP_API_KEY": "",
+            "BRAVE_API_KEY": "",
+            "APIFY_API_KEY": "",
+        },
+        "meta": {
+            "META_APP_ID": "",
+            "META_APP_SECRET": "",
+        },
+        "nova": {
+            "url": f"http://localhost:{NOVA_PORT}",
+            "api_key": "",
+            "token": "",
+            "enabled": False,
+        },
+        "omni": {
+            "url": f"http://localhost:{OMNI_PORT}",
+            "key": "",
+        },
+        "agent": {
+            "display_name": "Melissa",
+            "role": "asesora virtual",
+            "prompt_master": "",
+        },
+    }
+
+
+def ensure_workspace_files() -> None:
+    Path(MELISSA_HOME).mkdir(parents=True, exist_ok=True)
+    Path(INSTANCES_DIR).mkdir(parents=True, exist_ok=True)
+    if not WORKSPACE_CONFIG_PATH.exists():
+        WORKSPACE_CONFIG_PATH.write_text(
+            json.dumps(workspace_defaults(), indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    if not SHARED_TELEGRAM_ROUTES.exists():
+        save_shared_telegram_routes({"default_instance": "", "routes": {}})
+
+
+def load_workspace_config() -> Dict[str, Any]:
+    defaults = workspace_defaults()
+    if not WORKSPACE_CONFIG_PATH.exists():
+        return defaults
+    try:
+        payload = json.loads(WORKSPACE_CONFIG_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return defaults
+    if not isinstance(payload, dict):
+        return defaults
+    merged = json.loads(json.dumps(defaults))
+    for key, value in payload.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key].update(value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def save_workspace_config(data: Dict[str, Any]) -> None:
+    ensure_workspace_files()
+    WORKSPACE_CONFIG_PATH.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
+def workspace_is_configured() -> bool:
+    config = load_workspace_config()
+    return bool(
+        str(config.get("default_business_name", "")).strip()
+        or str(config.get("owner_name", "")).strip()
+        or str(config.get("telegram_token", "")).strip()
+        or any(str(v).strip() for v in config.get("llm_keys", {}).values())
+    )
+
+
+def runtime_defaults() -> Dict[str, Any]:
+    config = load_workspace_config()
+    legacy_env = load_env(f"{MELISSA_DIR}/.env")
+    llm_keys = dict(config.get("llm_keys", {}))
+    search_keys = dict(config.get("search_keys", {}))
+    meta = dict(config.get("meta", {}))
+    nova_cfg = dict(config.get("nova", {}))
+    omni_cfg = dict(config.get("omni", {}))
+
+    for key in llm_keys:
+        llm_keys[key] = llm_keys.get(key) or legacy_env.get(key, "")
+    for key in search_keys:
+        search_keys[key] = search_keys.get(key) or legacy_env.get(key, "")
+    for key in meta:
+        meta[key] = meta.get(key) or legacy_env.get(key, "")
+
+    nova_cfg["url"] = nova_cfg.get("url") or legacy_env.get("NOVA_URL", f"http://localhost:{NOVA_PORT}")
+    nova_cfg["api_key"] = nova_cfg.get("api_key") or legacy_env.get("NOVA_API_KEY", "")
+    nova_cfg["token"] = nova_cfg.get("token") or legacy_env.get("NOVA_TOKEN", "")
+    if "NOVA_ENABLED" in legacy_env and not nova_cfg.get("enabled"):
+        nova_cfg["enabled"] = legacy_env.get("NOVA_ENABLED", "false").lower() == "true"
+
+    omni_cfg["url"] = omni_cfg.get("url") or legacy_env.get("OMNI_URL", f"http://localhost:{OMNI_PORT}")
+    omni_cfg["key"] = omni_cfg.get("key") or legacy_env.get("OMNI_KEY", "")
+
+    return {
+        "workspace": config,
+        "llm_keys": llm_keys,
+        "search_keys": search_keys,
+        "meta": meta,
+        "nova": nova_cfg,
+        "omni": omni_cfg,
+        "public_base_url": str(config.get("public_base_url", "")).strip() or legacy_env.get("BASE_URL", "").strip(),
+        "telegram_token": str(config.get("telegram_token", "")).strip() or legacy_env.get("TELEGRAM_TOKEN", "").strip(),
+        "telegram_shared": bool(config.get("telegram_shared", False)),
+        "default_platform": str(config.get("default_platform", "telegram")).strip() or "telegram",
+        "default_business_name": str(config.get("default_business_name", "")).strip(),
+        "default_sector": str(config.get("default_sector", "")).strip(),
+    }
+
+
 def load_shared_telegram_routes() -> Dict[str, Any]:
     default = {"default_instance": "", "routes": {}}
     if not SHARED_TELEGRAM_ROUTES.exists():
@@ -807,6 +947,95 @@ def ensure_shared_telegram_default(instance_name: str) -> Dict[str, Any]:
         routes["default_instance"] = instance_name
         save_shared_telegram_routes(routes)
     return routes
+
+
+def workspace_summary(config: Optional[Dict[str, Any]] = None) -> None:
+    cfg = config or load_workspace_config()
+    llm_active = [key for key, value in cfg.get("llm_keys", {}).items() if str(value).strip()]
+    search_active = [key for key, value in cfg.get("search_keys", {}).items() if str(value).strip()]
+    section("Workspace Melissa", "Producto limpio y configurable")
+    kv("Owner", cfg.get("owner_name", "") or "—")
+    kv("Negocio por defecto", cfg.get("default_business_name", "") or "—")
+    kv("Sector sugerido", cfg.get("default_sector", "") or "—")
+    kv("Plataforma sugerida", cfg.get("default_platform", "telegram") or "telegram")
+    kv("Base URL", cfg.get("public_base_url", "") or "—")
+    kv("Telegram compartido", "sí" if cfg.get("telegram_shared") else "no")
+    kv("Token Telegram", "configurado" if cfg.get("telegram_token") else "vacío")
+    kv("LLM keys", ", ".join(llm_active) if llm_active else "ninguna")
+    kv("Search keys", ", ".join(search_active) if search_active else "ninguna")
+    kv("Agente", cfg.get("agent", {}).get("display_name", "Melissa"))
+    nl()
+
+
+def edit_workspace_config() -> Dict[str, Any]:
+    ensure_workspace_files()
+    cfg = load_workspace_config()
+
+    owner_name = prompt("Nombre del dueño o admin", default=cfg.get("owner_name", ""))
+    business_name = prompt("Nombre del negocio por defecto", default=cfg.get("default_business_name", ""))
+    sector_keys = list(SECTORS.keys())
+    suggested_sector = str(cfg.get("default_sector", "") or "").strip()
+    if confirm("¿Definir un sector por defecto para nuevas instancias?", default=bool(suggested_sector)):
+        sector_labels = [f"{SECTORS[key].emoji} {SECTORS[key].name}" for key in sector_keys]
+        sector_descs = [SECTORS[key].tagline for key in sector_keys]
+        sector_idx = select(sector_labels, descs=sector_descs, title="Sector sugerido para nuevas instancias")
+        cfg["default_sector"] = sector_keys[sector_idx]
+
+    platform_options = ["telegram", "whatsapp", "ambos"]
+    platform_descs = [
+        "Empieza por Telegram con setup más simple.",
+        "Prepara WhatsApp Business como canal principal.",
+        "Deja todo listo para Telegram y WhatsApp.",
+    ]
+    platform_idx = select(
+        ["Telegram", "WhatsApp", "Ambos"],
+        descs=platform_descs,
+        title="Canal sugerido para nuevas instancias",
+    )
+    cfg["default_platform"] = platform_options[platform_idx]
+
+    public_base_url = prompt("Base URL pública por defecto", default=cfg.get("public_base_url", ""))
+    telegram_token = prompt(
+        "Token compartido de Telegram (opcional)",
+        default=cfg.get("telegram_token", ""),
+        secret=bool(cfg.get("telegram_token")),
+    )
+    telegram_shared = confirm("¿Usar router compartido de Telegram por defecto?", default=bool(cfg.get("telegram_shared")))
+
+    llm_labels = [
+        ("GROQ_API_KEY", "Groq"),
+        ("GEMINI_API_KEY", "Gemini"),
+        ("OPENROUTER_API_KEY", "OpenRouter"),
+        ("OPENAI_API_KEY", "OpenAI"),
+    ]
+    if confirm("¿Configurar API keys LLM ahora?", default=any(cfg.get("llm_keys", {}).values())):
+        for key, label in llm_labels:
+            current = cfg["llm_keys"].get(key, "")
+            cfg["llm_keys"][key] = prompt(f"{label} API key", default=current, secret=bool(current))
+
+    if confirm("¿Configurar claves de búsqueda ahora?", default=any(cfg.get("search_keys", {}).values())):
+        for key, label in [("BRAVE_API_KEY", "Brave Search"), ("SERP_API_KEY", "SerpAPI"), ("APIFY_API_KEY", "Apify")]:
+            current = cfg["search_keys"].get(key, "")
+            cfg["search_keys"][key] = prompt(f"{label} API key", default=current, secret=bool(current))
+
+    cfg["owner_name"] = owner_name.strip()
+    cfg["default_business_name"] = business_name.strip()
+    cfg["public_base_url"] = public_base_url.strip()
+    cfg["telegram_token"] = telegram_token.strip()
+    cfg["telegram_shared"] = telegram_shared
+
+    agent_cfg = dict(cfg.get("agent", {}))
+    agent_cfg["display_name"] = prompt("Nombre base del agente", default=agent_cfg.get("display_name", "Melissa")).strip() or "Melissa"
+    agent_cfg["role"] = prompt("Rol base del agente", default=agent_cfg.get("role", "asesora virtual")).strip() or "asesora virtual"
+    agent_cfg["prompt_master"] = prompt(
+        "Prompt maestro base (opcional)",
+        default=agent_cfg.get("prompt_master", ""),
+    ).strip()
+    cfg["agent"] = agent_cfg
+
+    save_workspace_config(cfg)
+    ok(f"Workspace guardado en {WORKSPACE_CONFIG_PATH}")
+    return cfg
 
 def slug(name):
     """Convertir nombre a slug."""
@@ -1131,103 +1360,49 @@ def notify_omni(event, details=""):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def cmd_init(args):
-    """Configuración inicial del sistema."""
+    """Onboarding guiado del producto Melissa."""
     print_logo()
+    ensure_workspace_files()
+    section("Melissa Init", "Primer setup guiado del producto")
+    info("Este init no usa configuraciones del autor. Crea tu workspace limpio en ~/.melissa.")
+    nl()
 
-    section("Inicialización", "Verificando el sistema")
-
-    # Sistema
     info("Sistema:")
     kv("OS", platform.system())
     kv("Python", sys.version.split()[0])
-    kv("Terminal", os.getenv("TERM", "unknown"))
+    kv("Melissa home", MELISSA_HOME)
+    kv("Instancias", INSTANCES_DIR)
     nl()
 
-    # Dependencias
-    info("Dependencias:")
+    info("Dependencias base:")
     deps = [("python3", "Python 3"), ("pm2", "PM2"), ("git", "Git"), ("curl", "curl")]
-    all_ok = True
     for cmd_, label in deps:
         if shutil.which(cmd_):
             ok(label)
         else:
-            fail(f"{label} no encontrado")
-            all_ok = False
+            warn(f"{label} no encontrado")
     nl()
-    
-    # Archivos
-    info("Archivos de Melissa:")
-    core_files = ["melissa.py", "search.py", "knowledge_base.py", "nova_bridge.py"]
-    for f in core_files:
-        p = f"{MELISSA_DIR}/{f}"
-        if os.path.exists(p):
-            ok(f)
-        else:
-            warn(f"{f} — no encontrado")
-    # V7: verificar carpeta de agentes
-    v7_path = f"{MELISSA_DIR}/v7"
-    if os.path.isdir(v7_path):
-        agent_count = len([f for f in os.listdir(f"{v7_path}/agents") if f.endswith(".py")]) if os.path.isdir(f"{v7_path}/agents") else 0
-        ok(f"v7/ — {agent_count} agentes ({v7_path})")
-    else:
-        warn("v7/ — no encontrado (arquitectura V7 no disponible)")
-    nl()
-    
-    # .env
-    env_path = f"{MELISSA_DIR}/.env"
-    if not os.path.exists(env_path):
-        fail(".env no encontrado")
-        info("Crea uno con: cp .env.example .env")
+
+    workspace_summary()
+    if not confirm("¿Configurar o actualizar este workspace ahora?", default=True):
         return
-    
-    ev = load_env(env_path)
-    
-    info("Configuración:")
-    checks = [
-        ("TELEGRAM_TOKEN", "Telegram"),
-        ("GROQ_API_KEY", "Groq LLM"),
-        ("BASE_URL", "URL pública"),
-        ("MASTER_API_KEY", "Master key")
-    ]
-    for k, label in checks:
-        if ev.get(k):
-            ok(label)
-        else:
-            warn(f"{label} vacío ({k})")
+
+    cfg = edit_workspace_config()
     nl()
-    
-    # LLMs
-    info("Proveedores LLM:")
-    llm_keys = ["GROQ_API_KEY", "GEMINI_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY"]
-    llm_count = sum(1 for k in llm_keys if ev.get(k))
-    progress_bar(llm_count, len(llm_keys), label=f"{llm_count} configurados")
+    info("Melissa ya puede nacer como producto abierto sin estado previo.")
+    info("Cuando hables con Melissa desde Telegram como admin podrás afinarla con:")
+    dim("  /aprender [instrucción]   → evolucionar prompt en lenguaje natural")
+    dim("  /control [instrucción]    → saludo, frases prohibidas y trato duro")
+    dim("  /personalidad             → ver estado actual del agente")
     nl()
-    
-    # IP
-    ip = public_ip()
-    if ip:
-        kv("IP pública", ip)
-    nl()
-    
-    # Health check
-    h = health(int(ev.get("PORT", BASE_PORT)))
-    if h:
-        ok("Melissa ya está online")
-    else:
-        if confirm("¿Arrancar Melissa ahora?"):
-            start_sh = f"{MELISSA_DIR}/start.sh"
-            if os.path.exists(start_sh):
-                with Spinner("Arrancando...") as sp:
-                    subprocess.run(["bash", start_sh], cwd=MELISSA_DIR, capture_output=True)
-                    time.sleep(4)
-                    h2 = health(int(ev.get("PORT", BASE_PORT)))
-                    sp.finish("Online" if h2 else "Arrancando...", ok=bool(h2))
-    
-    nl()
-    section("Listo", "Sistema inicializado")
-    info("Usa 'melissa new' para crear tu primera instancia")
-    info("Usa 'melissa template' para ver plantillas por sector")
-    info("Usa 'melissa dashboard' para el panel de control")
+
+    if confirm("¿Crear tu primera instancia ahora?", default=not bool(get_instances())):
+        cmd_new(argparse.Namespace(name=cfg.get("default_business_name", ""), subcommand="", command="new"))
+        return
+
+    section("Listo", "Workspace preparado")
+    info("Siguiente paso: melissa new")
+    info("Luego: melissa config o melissa bb config para ajustar prompt y personalidad")
     nl()
 
 def cmd_list(args):
@@ -1356,14 +1531,23 @@ def cmd_new(args):
     
     nl()
     
+    defaults = runtime_defaults()
+    workspace_cfg = defaults["workspace"]
+
     # 2. Sector
     sector_list = list(SECTORS.keys())
     sector_names = [f"{SECTORS[s].emoji} {SECTORS[s].name}" for s in sector_list]
     sector_descs = [SECTORS[s].tagline for s in sector_list]
-    
-    info("¿Qué tipo de negocio es?")
-    sector_idx = select(sector_names, sector_descs)
-    sector_id = sector_list[sector_idx]
+    default_sector = defaults.get("default_sector", "")
+    if default_sector in SECTORS and confirm(
+        f"¿Usar el sector base '{SECTORS[default_sector].name}' para esta instancia?",
+        default=True,
+    ):
+        sector_id = default_sector
+    else:
+        info("¿Qué tipo de negocio es?")
+        sector_idx = select(sector_names, sector_descs)
+        sector_id = sector_list[sector_idx]
     sector = SECTORS[sector_id]
     
     nl()
@@ -1377,20 +1561,26 @@ def cmd_new(args):
         "WhatsApp Business API (requiere Meta Business)",
         "Telegram primero, WhatsApp después"
     ]
-    plat_idx = select(platforms, platform_descs, title="¿Qué plataforma usará?")
-    platform_choice = ["telegram", "whatsapp", "telegram"][plat_idx]
+    default_platform = defaults.get("default_platform", "telegram")
+    if default_platform in {"telegram", "whatsapp", "ambos"} and confirm(
+        f"¿Usar la plataforma sugerida '{default_platform}'?",
+        default=True,
+    ):
+        platform_choice = "telegram" if default_platform == "ambos" else default_platform
+    else:
+        plat_idx = select(platforms, platform_descs, title="¿Qué plataforma usará?")
+        platform_choice = ["telegram", "whatsapp", "telegram"][plat_idx]
     
     nl()
     
     # 4. Token de Telegram
     tg_token = ""
     telegram_shared = False
-    base_env = load_env(f"{MELISSA_DIR}/.env")
     if platform_choice == "telegram":
-        shared_base_token = (base_env.get("TELEGRAM_TOKEN", "") or "").strip()
+        shared_base_token = defaults["telegram_token"]
         if shared_base_token and confirm("¿Usar el token compartido de Melissa base para Telegram?"):
             tg_token = shared_base_token
-            telegram_shared = True
+            telegram_shared = bool(defaults["telegram_shared"])
         else:
             tg_token = prompt("Token de Telegram (@BotFather → /newbot)")
             if not tg_token:
@@ -1407,7 +1597,7 @@ def cmd_new(args):
     ip = public_ip()
     # Para Telegram detrás de Caddy, la URL pública correcta es el dominio HTTPS
     # compartido. El puerto interno vive solo en el reverse proxy.
-    shared_public_base = (base_env.get("BASE_URL", "") or "").strip().rstrip("/")
+    shared_public_base = defaults["public_base_url"].rstrip("/")
     if shared_public_base.startswith("https://"):
         default_url = shared_public_base
     else:
@@ -1429,14 +1619,6 @@ def cmd_new(args):
         _clone_runtime_entries(MELISSA_DIR, inst_dir)
         
         # .env
-        shared_keys = [
-            "GROQ_API_KEY", "GEMINI_API_KEY", "GEMINI_API_KEY_2", "GEMINI_API_KEY_3",
-            "GEMINI_API_KEY_4", "GEMINI_API_KEY_5", "GEMINI_API_KEY_6", "GEMINI_API_KEY_7",
-            "OPENROUTER_API_KEY", "OPENAI_API_KEY", "SERP_API_KEY", "BRAVE_API_KEY",
-            "APIFY_API_KEY", "META_APP_ID", "META_APP_SECRET", "OMNI_KEY"
-        ]
-        shared = {k: base_env.get(k, "") for k in shared_keys}
-        
         env_content = f"""# Melissa — {name}
 # Sector: {sector.name}
 # Creado: {datetime.now().strftime('%Y-%m-%d %H:%M')}
@@ -1447,16 +1629,16 @@ TELEGRAM_TOKEN={tg_token}
 TELEGRAM_SHARED={"true" if telegram_shared else "false"}
 
 # LLM
-GROQ_API_KEY={shared['GROQ_API_KEY']}
-GEMINI_API_KEY={shared['GEMINI_API_KEY']}
-GEMINI_API_KEY_2={shared['GEMINI_API_KEY_2']}
-GEMINI_API_KEY_3={shared['GEMINI_API_KEY_3']}
-GEMINI_API_KEY_4={shared['GEMINI_API_KEY_4']}
-GEMINI_API_KEY_5={shared['GEMINI_API_KEY_5']}
-GEMINI_API_KEY_6={shared['GEMINI_API_KEY_6']}
-GEMINI_API_KEY_7={shared['GEMINI_API_KEY_7']}
-OPENROUTER_API_KEY={shared['OPENROUTER_API_KEY']}
-OPENAI_API_KEY={shared['OPENAI_API_KEY']}
+GROQ_API_KEY={defaults['llm_keys']['GROQ_API_KEY']}
+GEMINI_API_KEY={defaults['llm_keys']['GEMINI_API_KEY']}
+GEMINI_API_KEY_2={defaults['llm_keys']['GEMINI_API_KEY_2']}
+GEMINI_API_KEY_3={defaults['llm_keys']['GEMINI_API_KEY_3']}
+GEMINI_API_KEY_4={defaults['llm_keys']['GEMINI_API_KEY_4']}
+GEMINI_API_KEY_5={defaults['llm_keys']['GEMINI_API_KEY_5']}
+GEMINI_API_KEY_6={defaults['llm_keys']['GEMINI_API_KEY_6']}
+GEMINI_API_KEY_7={defaults['llm_keys']['GEMINI_API_KEY_7']}
+OPENROUTER_API_KEY={defaults['llm_keys']['OPENROUTER_API_KEY']}
+OPENAI_API_KEY={defaults['llm_keys']['OPENAI_API_KEY']}
 LLM_REASONING=google/gemini-2.5-flash
 LLM_FAST=google/gemini-2.5-flash
 LLM_LITE=google/gemini-2.5-flash-lite
@@ -1464,9 +1646,9 @@ V8_QUALITY_THRESHOLD=0.72
 V8_MAX_RETRIES=3
 
 # Búsqueda
-SERP_API_KEY={shared['SERP_API_KEY']}
-BRAVE_API_KEY={shared['BRAVE_API_KEY']}
-APIFY_API_KEY={shared['APIFY_API_KEY']}
+SERP_API_KEY={defaults['search_keys']['SERP_API_KEY']}
+BRAVE_API_KEY={defaults['search_keys']['BRAVE_API_KEY']}
+APIFY_API_KEY={defaults['search_keys']['APIFY_API_KEY']}
 
 # Servidor
 PORT={port}
@@ -1490,18 +1672,18 @@ BUBBLE_PAUSE_MAX=2.5
 WA_PHONE_ID=
 WA_ACCESS_TOKEN=
 WA_VERIFY_TOKEN=
-META_APP_ID={shared['META_APP_ID']}
-META_APP_SECRET={shared['META_APP_SECRET']}
+META_APP_ID={defaults['meta']['META_APP_ID']}
+META_APP_SECRET={defaults['meta']['META_APP_SECRET']}
 
 # Nova
-NOVA_URL=http://localhost:{NOVA_PORT}
-NOVA_API_KEY=
-NOVA_TOKEN=
-NOVA_ENABLED=false
+NOVA_URL={defaults['nova']['url']}
+NOVA_API_KEY={defaults['nova']['api_key']}
+NOVA_TOKEN={defaults['nova']['token']}
+NOVA_ENABLED={"true" if defaults['nova'].get('enabled') else "false"}
 
 # Omni
-OMNI_URL=http://localhost:{OMNI_PORT}
-OMNI_KEY={shared['OMNI_KEY']}
+OMNI_URL={defaults['omni']['url']}
+OMNI_KEY={defaults['omni']['key']}
 """
         Path(f"{inst_dir}/.env").write_text(env_content)
         
@@ -1541,6 +1723,27 @@ OMNI_KEY={shared['OMNI_KEY']}
         time.sleep(4)
         h = health(port)
         sp.finish("Online" if h else "Arrancando...", ok=bool(h))
+
+    agent_seed = dict(workspace_cfg.get("agent", {}))
+    if agent_seed and any(str(agent_seed.get(key, "")).strip() for key in ("display_name", "role", "prompt_master")):
+        seeded_inst = Instance(
+            name=name,
+            label=name_raw,
+            port=port,
+            dir=inst_dir,
+            env=load_env(f"{inst_dir}/.env"),
+            is_base=False,
+            sector=sector_id,
+        )
+        _bb_apply_persona(
+            seeded_inst,
+            {
+                "name": agent_seed.get("display_name") or "Melissa",
+                "role": agent_seed.get("role") or "asesora virtual",
+                "tone_instruction": agent_seed.get("prompt_master", ""),
+            },
+            spinner_label="Aplicando identidad base del agente...",
+        )
     
     # Nova
     nova_h = health(NOVA_PORT)
@@ -2345,10 +2548,75 @@ def cmd_logs(args):
 def cmd_config(args):
     """Editar configuración de una instancia."""
     name = getattr(args, 'name', '') or ''
+    instances = get_instances()
+
+    if not name:
+        ensure_workspace_files()
+        if not instances:
+            info("No hay instancias todavía. Abro el init guiado.")
+            nl()
+            cmd_init(args)
+            return
+
+        print_logo(compact=True)
+        section("Melissa Config", "Hub de configuración del producto")
+        workspace_cfg = load_workspace_config()
+        workspace_summary(workspace_cfg)
+        options = [
+            "Configurar workspace base",
+            "Configurar una instancia",
+            "Ajustar agente, prompt y personalidad",
+            "Router compartido de Telegram",
+            "Salir",
+        ]
+        descs = [
+            "Dueño, negocio por defecto, API keys y prompt base.",
+            "Variables operativas de una instancia concreta.",
+            "Abre Black Boss Config para tono, prompt y skills.",
+            "Elegir instancia por defecto y limpiar rutas compartidas.",
+            "Volver a la terminal.",
+        ]
+        choice = select(options, descs=descs, title="¿Qué quieres configurar?")
+        if choice == 0:
+            edit_workspace_config()
+            return
+        if choice == 2:
+            cmd_bb_config(argparse.Namespace(name="", subcommand="", command="bb"))
+            return
+        if choice == 3:
+            routes = load_shared_telegram_routes()
+            router_options = [
+                "Definir instancia por defecto",
+                "Limpiar instancia por defecto",
+                "Vaciar rutas por chat",
+                "Salir",
+            ]
+            router_descs = [
+                f"Actual: {routes.get('default_instance', '') or 'ninguna'}",
+                "Deja el router sin fallback.",
+                "Borra el mapeo chat → instancia compartida.",
+                "Volver.",
+            ]
+            router_choice = select(router_options, descs=router_descs, title="Router compartido de Telegram")
+            if router_choice == 0:
+                idx = select([inst.label for inst in instances], title="Instancia por defecto del router")
+                routes["default_instance"] = instances[idx].name
+                save_shared_telegram_routes(routes)
+                ok(f"Router por defecto: {instances[idx].name}")
+            elif router_choice == 1:
+                routes["default_instance"] = ""
+                save_shared_telegram_routes(routes)
+                ok("Router sin instancia por defecto")
+            elif router_choice == 2:
+                routes["routes"] = {}
+                save_shared_telegram_routes(routes)
+                ok("Rutas por chat limpiadas")
+            return
+        if choice == 4:
+            return
     
     inst = find_instance(name) if name else None
     if not inst:
-        instances = get_instances()
         if len(instances) == 1:
             inst = instances[0]
         elif instances:
@@ -7621,7 +7889,7 @@ def cmd_help_extended(args):
     
     command_groups = [
         ("Gestión", [
-            ("init", "Configuración inicial"),
+            ("init", "Primer setup guiado del producto"),
             ("new", "Crear instancia"),
             ("list", "Ver instancias"),
             ("dashboard", "Panel en tiempo real"),
@@ -7638,7 +7906,7 @@ def cmd_help_extended(args):
             ("alerts", "Sistema de alertas"),
         ]),
         ("Operaciones", [
-            ("config [n]", "Editar configuración"),
+            ("config [n]", "Hub de configuración / editar instancia"),
             ("restart [n]", "Reiniciar"),
             ("stop [n]", "Detener"),
             ("scale [n] [num]", "Escalar workers"),
@@ -10665,6 +10933,12 @@ def main():
     if args.subcommand and not args.name:
         args.name = args.subcommand
     
+    if cmd == "" and not args.help:
+        ensure_workspace_files()
+        if not workspace_is_configured() or not get_instances():
+            cmd_init(args)
+            return
+
     # Help
     if args.help or cmd in ("help", "--help", "-h", ""):
         cmd_help_extended(args)

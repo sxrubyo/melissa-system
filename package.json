@@ -1,6 +1,6 @@
 {
   "name": "melissa-ai",
-  "version": "8.0.1",
+  "version": "8.0.2",
   "description": "Open-source CLI and runtime for building Melissa AI receptionist agents on WhatsApp and Telegram.",
   "license": "MIT",
   "author": "Black Boss",

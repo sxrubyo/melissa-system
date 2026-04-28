@@ -3027,13 +3027,14 @@ class Config:
     TELEGRAM_SHARED_ALLOW_DEFAULT_FALLBACK = os.getenv(
         "TELEGRAM_SHARED_ALLOW_DEFAULT_FALLBACK", "false"
     ).lower() == "true"
+    _MELISSA_HOME = os.getenv("MELISSA_HOME", str(Path.home() / ".melissa"))
     TELEGRAM_SHARED_ROUTES_PATH = os.getenv(
         "TELEGRAM_SHARED_ROUTES_PATH",
-        "/home/ubuntu/melissa/shared_telegram_routes.json",
+        str(Path(_MELISSA_HOME) / "shared_telegram_routes.json"),
     )
     TELEGRAM_SHARED_INSTANCES_DIR = os.getenv(
         "TELEGRAM_SHARED_INSTANCES_DIR",
-        "/home/ubuntu/melissa-instances",
+        str(Path(_MELISSA_HOME) / "instances"),
     )
 
     # Plataforma: "telegram" | "whatsapp_cloud" | "evolution" | "whatsapp"
@@ -19229,7 +19230,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Melissa v8.0",
     description="Melissa V8.0 — Agente de Recepción Hipernaturalmente Humana",
-    version="8.0.1",
+    version="8.0.2",
     lifespan=lifespan
 )
 
@@ -19672,7 +19673,7 @@ async def health():
 
     return {
         "status":         "online",
-        "version":        "8.0.1",
+        "version":        "8.0.2",
         "clinic":         clinic.get("name", "sin configurar"),
         "sector":         Config.SECTOR or clinic.get("sector", "otro"),
         "setup_done":     bool(clinic.get("setup_done")),

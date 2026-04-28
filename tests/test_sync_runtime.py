@@ -5,7 +5,8 @@ import sqlite3
 import sys
 
 
-sys.path.insert(0, "/home/ubuntu/melissa")
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 import melissa_cli as cli  # noqa: E402
 
 
@@ -157,3 +158,80 @@ def test_bb_apply_persona_falls_back_to_sqlite_when_instance_is_offline(monkeypa
     payload = json.loads(row[0])
     assert payload["name"] == "Nova"
     assert payload["tone_instruction"] == "responde corto"
+
+
+def test_ensure_workspace_files_creates_clean_blank_state(monkeypatch, tmp_path):
+    workspace_config = tmp_path / "config.json"
+    shared_routes = tmp_path / "shared_telegram_routes.json"
+    instances_dir = tmp_path / "instances"
+
+    monkeypatch.setattr(cli, "MELISSA_HOME", str(tmp_path))
+    monkeypatch.setattr(cli, "WORKSPACE_CONFIG_PATH", workspace_config)
+    monkeypatch.setattr(cli, "SHARED_TELEGRAM_ROUTES", shared_routes)
+    monkeypatch.setattr(cli, "INSTANCES_DIR", str(instances_dir))
+
+    cli.ensure_workspace_files()
+
+    cfg = json.loads(workspace_config.read_text(encoding="utf-8"))
+    routes = json.loads(shared_routes.read_text(encoding="utf-8"))
+
+    assert cfg["default_business_name"] == ""
+    assert cfg["agent"]["display_name"] == "Melissa"
+    assert cfg["agent"]["role"] == "asesora virtual"
+    assert routes == {"default_instance": "", "routes": {}}
+    assert instances_dir.exists()
+
+
+def test_runtime_defaults_prefers_workspace_values_but_can_fallback_to_legacy_env(monkeypatch, tmp_path):
+    workspace_config = tmp_path / "config.json"
+    shared_routes = tmp_path / "shared_telegram_routes.json"
+    instances_dir = tmp_path / "instances"
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    (repo_dir / ".env").write_text(
+        "\n".join(
+            [
+                "TELEGRAM_TOKEN=legacy-telegram",
+                "BASE_URL=https://legacy.example.com",
+                "OPENROUTER_API_KEY=legacy-openrouter",
+                "BRAVE_API_KEY=legacy-brave",
+                "OMNI_KEY=legacy-omni",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(cli, "MELISSA_HOME", str(tmp_path))
+    monkeypatch.setattr(cli, "WORKSPACE_CONFIG_PATH", workspace_config)
+    monkeypatch.setattr(cli, "SHARED_TELEGRAM_ROUTES", shared_routes)
+    monkeypatch.setattr(cli, "INSTANCES_DIR", str(instances_dir))
+    monkeypatch.setattr(cli, "MELISSA_DIR", str(repo_dir))
+    cli.load_env.cache_clear()
+
+    cli.save_workspace_config(
+        {
+            **cli.workspace_defaults(),
+            "public_base_url": "https://workspace.example.com",
+            "telegram_token": "workspace-telegram",
+            "llm_keys": {
+                **cli.workspace_defaults()["llm_keys"],
+                "OPENROUTER_API_KEY": "workspace-openrouter",
+            },
+            "search_keys": {
+                **cli.workspace_defaults()["search_keys"],
+                "BRAVE_API_KEY": "",
+            },
+            "omni": {
+                "url": "http://localhost:9001",
+                "key": "",
+            },
+        }
+    )
+
+    defaults = cli.runtime_defaults()
+
+    assert defaults["telegram_token"] == "workspace-telegram"
+    assert defaults["public_base_url"] == "https://workspace.example.com"
+    assert defaults["llm_keys"]["OPENROUTER_API_KEY"] == "workspace-openrouter"
+    assert defaults["search_keys"]["BRAVE_API_KEY"] == "legacy-brave"
+    assert defaults["omni"]["key"] == "legacy-omni"
