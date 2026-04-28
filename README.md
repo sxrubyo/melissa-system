@@ -1,110 +1,235 @@
-# 🤖 Melissa — AI Receptionist Runtime
+```markdown
+# 
+```
+███╗   ███╗███████╗██╗     ██╗███████╗███████╗ █████╗ 
+████╗ ████║██╔════╝██║     ██║██╔════╝██╔════╝██╔══██╗
+██╔████╔██║█████╗  ██║     ██║███████╗███████╗███████║
+██║╚██╔╝██║██╔══╝  ██║     ██║╚════██║╚════██║██╔══██║
+██║ ╚═╝ ██║███████╗███████╗██║███████║███████║██║  ██║
+╚═╝     ╚═╝╚══════╝╚══════╝╚═╝╚══════╝╚══════╝╚═╝  ╚═╝
+```
 
-Melissa is a high-performance AI receptionist runtime you run on your own servers. It answers your customers on the channels you already use. It can process context and memory, and orchestrate multiple instances. The Core is just the engine — the product is the receptionist. 
+**Deploy production-ready AI receptionists on WhatsApp and Telegram — in minutes, not weeks.**
 
-If you want a scalable, multi-instance virtual assistant that feels fast, secure, and always-on, this is it.
+[![NPM Version](https://img.shields.io/npm/v/melissa-ai.svg?color=9333ea)](https://www.npmjs.com/package/melissa-ai)
+[![License: MIT](https://img.shields.io/badge/License-MIT-9333ea.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-9333ea.svg)](https://www.python.org/)
+[![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Docker-lightgrey)](https://github.com/sxrubyo/melissa)
+[![Status](https://img.shields.io/badge/status-production-brightgreen)](https://github.com/sxrubyo/melissa)
 
-Supported channels include: **WhatsApp, Telegram**.
+---
 
-Preferred setup: run `melissa` onboard in your terminal. Works seamlessly with `npm`.
+## What is Melissa?
 
-[![NPM Version](https://img.shields.io/npm/v/melissa-ai.svg)](https://www.npmjs.com/package/melissa-ai)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+**Melissa** is a high-performance runtime engine for deploying intelligent AI receptionists that handle real customer conversations on **WhatsApp** and **Telegram**.
 
-## ⚡ Core Philosophy
+It's not a chatbot framework. It's not a low-code platform.  
+**Melissa is the production core** — memory, routing, context retention, multi-instance orchestration, and secure state isolation — built for businesses that need AI assistants running 24/7 without breaking.
 
-* **Decoupled Architecture:** The core stays clean. State, sessions, and secrets live only in your deployment instances.
-* **Integrated Memory Layer:** Built-in short-term memory and context normalization (`melissa_brain_v10`).
-* **Intelligent Routing:** High-concurrency main router powered by FastAPI (`melissa.py`).
-* **Sync CLI:** Built-in tool to clone, create, and sync the base code across multiple instances (`melissa sync`).
-* **Security Defaults:** Credentials, logs, and databases are strictly excluded from version control. Zero-trust environment out of the box.
+```
+Traditional Chatbot                    Melissa AI
+─────────────────                      ───────────
+● Stateless                            ● Persistent memory per conversation
+● Single bot = single server           ● Multi-instance sync from one core
+● Hardcoded flows                      ● Modular agents + skill injection
+● No context between sessions          ● Cross-session normalization
+● Credentials in repo (security risk)  ● Zero-trust state isolation
+```
 
-## 🚀 Quickstart
+---
 
-### Global Installation via NPM (Recommended)
-Melissa is packaged in npm for rapid deployment on servers or local environments.
+## Why Melissa?
 
+| Problem | Melissa's Solution |
+|---------|-------------------|
+| **"Every chatbot lives on a different server"** | One core syncs to unlimited production instances |
+| **"Conversation memory resets every session"** | `melissa_brain_v10` — persistent short-term memory |
+| **"We need different personalities per brand"** | Drop-in `personas/` config files — same engine, different tone |
+| **"Our credentials leaked in Git"** | `.env`, sessions, and databases **never** touch version control |
+| **"Scaling means copy-pasting code"** | `melissa sync` — propagate updates to all instances safely |
+
+---
+
+## Quick Start
+
+### Install via npm (Recommended)
 ```bash
-# Install globally
 npm install -g melissa-ai
-
-# Verify installation and view options
 melissa --help
 ```
 
-*Alternative via script:*
+### Install via Script
 ```bash
-bash install.sh --user
+curl -fsSL https://raw.githubusercontent.com/sxrubyo/melissa/main/install.sh | bash
 ```
 
-### Local Development Environment
-To modify the core or run integration tests:
-
+### Run Locally (Development)
 ```bash
-# 1. Clone the repository
 git clone https://github.com/sxrubyo/melissa.git
 cd melissa
-
-# 2. Configure environment variables (Base contract)
-cp .env.example .env
-
-# 3. Create and activate an isolated virtual environment
-python3 -m venv .venv
-source .venv/bin/activate
-
-# 4. Install dependencies
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-
-# 5. Start the FastAPI runtime
+cp .env.example .env  # configure your API keys
 python3 melissa.py
 ```
 
-## ⚙️ Instance Management (CLI)
-
-Melissa CLI maintains a single source of truth for the runtime. This allows you to propagate core updates to active instances without touching sensitive configurations.
-
-```bash
-# Sync the updated core to all linked instances
-python3 melissa_cli.py sync -y
-```
-
-## 🛡️ Security & DevOps
-
-We maintain a Zero-Trust environment in the repository. Treat inbound messages as untrusted input. If you are operating on production servers, follow these rules:
-
-* **Configuration Contract:** Only use `.env.example` to declare new variables. **Never** commit a real `.env` file.
-* **Data Isolation:** SQLite databases, API tokens, conversation histories, and local logs must be covered by `.gitignore`.
-* **Commit Auditing:** Run `git status` and review the working tree before pushing from any production machine.
-
-## 🏗️ Core Structure
-
-| Module / File | Primary Function |
-| :--- | :--- |
-| `melissa.py` | Main FastAPI API and runtime orchestrator. |
-| `melissa_brain_v10.py` | Memory layer and first-turn normalization. |
-| `melissa_domino.py` | Structural control to ensure high-quality responses. |
-| `melissa_core/` | Shared conversational logic and context retention. |
-| `melissa_agents/` | Specialized agents, skills, and external integrations. |
-| `personas/` | Bot personality and tone configuration files. |
-
-## 🧪 Automated Testing
-
-Continuous validation of core regressions and CLI flows. Run tests before opening a Pull Request:
-
-```bash
-# Run the complete test suite
-pytest -q
-
-# Specific verification of the sync engine
-pytest -q tests/test_sync_runtime.py
-```
-
-## 🗺️ Open Source Roadmap
-
-- [ ] Decrease monolith coupling in `melissa.py`.
-- [ ] Improve the separation boundary between the shared core and instance state.
-- [ ] Publish official guide for deploying new *Zero-Touch* instances over sensitive code.
+Server starts at `http://localhost:8000` with hot reload enabled.
 
 ---
-*Built to scale. Optimized for production.*
+
+## Core Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    melissa.py (FastAPI)                  │
+│              High-concurrency message router             │
+└────────────────────┬────────────────────────────────────┘
+                     │
+        ┌────────────┼────────────┐
+        │            │            │
+   ┌────▼───┐   ┌───▼────┐  ┌────▼─────┐
+   │ Brain  │   │ Domino │  │  Agents  │
+   │  v10   │   │Control │  │  Skills  │
+   │Memory  │   │Quality │  │Functions │
+   └────────┘   └────────┘  └──────────┘
+        │            │            │
+        └────────────┼────────────┘
+                     │
+            ┌────────▼─────────┐
+            │ Instance State   │
+            │ • Sessions       │
+            │ • Credentials    │
+            │ • Local DB       │
+            └──────────────────┘
+```
+
+| Module | Purpose |
+|--------|---------|
+| **`melissa.py`** | FastAPI orchestrator — handles webhooks, routing, concurrency |
+| **`melissa_brain_v10.py`** | Memory layer — context normalization, conversation history |
+| **`melissa_domino.py`** | Quality control — validates responses before delivery |
+| **`melissa_core/`** | Shared conversation logic and state retention |
+| **`melissa_agents/`** | Pluggable skills — calendar, CRM, payments, custom functions |
+| **`personas/`** | Personality configs — tone, language, brand voice |
+
+---
+
+## CLI Commands
+
+```bash
+melissa                          # Start the runtime server
+melissa sync                     # Sync core updates to all linked instances
+melissa sync --list              # Show all registered instances
+melissa sync --add <path>        # Register a new production instance
+melissa sync --remove <path>     # Unlink an instance
+melissa validate                 # Health check — core files, dependencies, config
+melissa persona create <name>    # Scaffold a new personality profile
+melissa agent list               # Show available agent modules
+melissa --version                # Show installed version
+```
+
+---
+
+## What Gets Synced (Core) vs. What Stays Local (Instance State)
+
+### ✅ Synced to all instances (the **core runtime**)
+```
+melissa.py                    # Main engine
+melissa_brain_v10.py          # Memory system
+melissa_domino.py             # Quality control
+melissa_core/                 # Shared logic
+melissa_agents/               # Skills and integrations
+personas/                     # Personality templates
+requirements.txt              # Python dependencies
+```
+
+### ❌ Never synced (stays **instance-specific**)
+```
+.env                          # API keys, tokens, secrets
+*.db                          # SQLite conversation history
+auth_info_*.txt               # WhatsApp session data
+logs/                         # Instance-specific logs
+backups/                      # Local database backups
+```
+
+This separation means:
+- **Updates are safe** — sync the engine without touching production credentials
+- **Secrets stay isolated** — each instance has its own `.env` and database
+- **One codebase, many deployments** — same core, different customers/brands
+
+---
+
+## Instance Management
+
+### Create a new production instance
+```bash
+# 1. Clone the core to a new location
+git clone https://github.com/sxrubyo/melissa.git /opt/melissa-client-abc
+
+# 2. Link it to your development core for future updates
+melissa sync --add /opt/melissa-client-abc
+
+# 3. Configure instance-specific secrets
+cd /opt/melissa-client-abc
+cp .env.example .env
+nano .env  # add API keys, phone numbers, etc.
+
+# 4. Start the instance
+python3 melissa.py
+```
+
+### Update all instances from core
+```bash
+cd ~/melissa-dev  # your main development repo
+git pull origin main
+melissa sync -y   # pushes updates to all linked instances
+```
+
+**No credentials or session data is touched.** Only core runtime files are updated.
+
+---
+
+## Security & Production Guidelines
+
+Melissa is built **Zero-Trust** from day one.
+
+### ✅ Do This
+- Use `.env.example` as the contract for required variables
+- Keep `.env`, `*.db`, and session files in `.gitignore`
+- Run `git status` before every commit from a production machine
+- Use separate `.env` per instance — never share credentials
+- Enable file integrity monitoring on production instances
+
+### ❌ Never Do This
+- Commit a real `.env` file
+- Store API tokens in code or comments
+- Push database files to version control
+- Share session files between instances
+- Run `git add .` blindly from a production server
+
+---
+
+## Roadmap
+
+- [ ] **Plugin marketplace** — community-contributed agents and skills
+- [ ] **Multi-language personas** — auto-switch based on customer locale
+- [ ] **Built-in analytics dashboard** — conversation metrics without external tools
+- [ ] **Edge deployment mode** — run Melissa on Cloudflare Workers / Vercel Edge
+- [ ] **Voice support** — Telegram voice messages → transcription → AI response
+- [ ] **Horizontal scaling** — Redis-backed session sharing for multi-server deployments
+
+---
+
+## Community & Support
+
+- **Documentation**: [docs.melissa-ai.com](https://docs.melissa-ai.com) *(coming soon)*
+- **Issues**: [GitHub Issues](https://github.com/sxrubyo/melissa/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/sxrubyo/melissa/discussions)
+- **npm**: [melissa-ai](https://www.npmjs.com/package/melissa-ai)
+
+Built for production. Optimized for scale. Designed for privacy.
+
+---
+
+**Built by [sxrubyo](https://github.com/sxrubyo)** · MIT License · Production-Ready · Open Source
+```
