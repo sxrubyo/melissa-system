@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="brand-assets/melissa-logo.png" alt="Melissa AI" width="400"/>
+  <img src="brand-assets/melissa-logo.png" alt="Melissa AI" width="300"/>
 
 ### 💜 **The AI Receptionist Engine Built for Agencies & Resellers**
 
