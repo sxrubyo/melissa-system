@@ -6543,6 +6543,17 @@ class DatabaseManager:
                 WHERE c.chat_id NOT IN (
                     SELECT chat_id FROM admins WHERE chat_id IS NOT NULL
                 )
+                AND c.chat_id != 'status@broadcast'
+                AND c.chat_id NOT LIKE '%@newsletter'
+                AND c.chat_id NOT LIKE 'owner-demo-%'
+                AND c.chat_id NOT LIKE 'owner-debug%'
+                AND c.chat_id NOT LIKE 'admin_probe%'
+                AND c.chat_id NOT LIKE 'admin_control%'
+                AND c.chat_id NOT LIKE 'prompt_probe%'
+                AND c.chat_id NOT LIKE 'style_probe%'
+                AND c.chat_id NOT LIKE 'wa_style_probe_%'
+                AND c.chat_id NOT LIKE 'tone_probe_%'
+                AND c.chat_id NOT LIKE 'fresh_greeting_fix_%'
                 GROUP BY c.chat_id
                 ORDER BY last_message DESC
                 LIMIT ?
@@ -13784,6 +13795,14 @@ class MelissaUltra:
                 "cuenteme que quiere ajustar",
                 "cuénteme qué quiere ajustar",
                 "estoy lista para ayudarte con la instancia",
+                "de manera adecuada",
+                "me permitira",
+                "me permitirá",
+                "ofrecer una mejor experiencia",
+                "a tus necesidades",
+                "a las de tus clientes",
+                "de manera efectiva",
+                "para poder hacer esto",
             )
             if any(token in lowered for token in banned):
                 return True
@@ -13803,18 +13822,52 @@ class MelissaUltra:
             lowered_response = _normalize_conv_text(raw_response or "")
             if not lowered_response:
                 return True
+            if any(token in lowered_user for token in ("para que", "para qué", "por que", "por qué")):
+                detail_tokens = ("chat", "cliente", "demo", "tono", "responder", "whatsapp")
+                return not any(token in lowered_response for token in detail_tokens)
             if any(token in lowered_user for token in ("quien te hizo", "quién te hizo", "como tenerte", "cómo tenerte", "quien te creo", "quién te creó")):
                 return "blackboss" not in lowered_response or "3124348669" not in lowered_response
             if any(token in lowered_user for token in ("audio", "audios", "nota de voz", "pdf", "archivo", "documento", "imagen")):
                 return not any(token in lowered_response for token in ("audio", "pdf", "documento", "imagen", "transcrib"))
+            if any(token in lowered_user for token in ("me mandaron tu numero", "me mandaron tu número", "me pasaron tu numero", "me pasaron tu número", "que haces exactamente", "qué haces exactamente", "no entiendo que haces", "no entiendo qué haces")):
+                capability_tokens = ("cliente", "clientes", "cita", "citas", "respon", "orient", "filtro", "report")
+                return not any(token in lowered_response for token in capability_tokens)
             if "5 x 4" in lowered_user or "5x4" in lowered_user:
                 return "20" not in lowered_response
             if "capital de francia" in lowered_user:
                 return "par" not in lowered_response
             return False
 
-        def _demo_owner_last_resort(user_text: str, *, explain_name: bool = False) -> str:
+        def _demo_owner_reground_needs_cleanup(raw_response: Optional[str]) -> bool:
+            lowered = _normalize_conv_text(raw_response or "")
+            if not lowered:
+                return True
+            parts = [part.strip() for part in re.split(r"\s*\|\|\|\s*|\n+", raw_response or "") if part.strip()]
+            if len(parts) > 2:
+                return True
+            low_signal_phrases = (
+                "me gustaria saber",
+                "me gustaría saber",
+                "tienes alguna consulta",
+                "necesitas ayuda con algo",
+                "de la mejor manera",
+                "puedes escribirme como si fuera un cliente",
+                "puedo tener una idea clara",
+                "de manera adecuada",
+                "ofrecer una mejor experiencia",
+                "como si fuera un cliente real, hoy",
+                "como si fuera un cliente real hoy",
+            )
+            return any(token in lowered for token in low_signal_phrases)
+
+        def _demo_owner_last_resort(
+            user_text: str,
+            *,
+            explain_name: bool = False,
+            current_business_name: str = "",
+        ) -> str:
             lowered = _normalize_conv_text(user_text)
+            has_bound_business = bool((current_business_name or "").strip())
             if any(token in lowered for token in ("quien te hizo", "quién te hizo", "como te hicieron", "cómo te hicieron", "como tenerte", "cómo tenerte")):
                 return (
                     "Me hizo BlackBoss, el equipo de Santiago Rubio"
@@ -13835,14 +13888,29 @@ class MelissaUltra:
                     " ||| Si quieres, primero te explico cómo funciono y luego me dices cómo se llama tu negocio"
                 )
             if explain_name or any(token in lowered for token in ("para que", "para qué", "no te lo dare", "no te lo daré", "no te doy", "no quiero dar")):
+                if has_bound_business:
+                    return (
+                        f"Te lo pedí para hablar como si ya llevara el chat de {current_business_name}"
+                        " ||| así la demo te muestra mejor cómo respondería de verdad"
+                    )
                 return (
                     "Te pido el nombre para hablar como si ya llevara tu WhatsApp, no para llenarte de preguntas"
                     " ||| Si prefieres, primero te muestro cómo trabajo y luego me dices cómo se llama tu negocio"
                 )
             if any(token in lowered for token in ("me mandaron tu numero", "me mandaron tu número", "me pasaron tu numero", "me pasaron tu número", "que haces exactamente", "qué haces exactamente")):
+                if has_bound_business:
+                    return (
+                        f"Yo sería la que lleva el chat de {current_business_name}"
+                        " ||| respondo clientes, filtro interesados y mantengo la conversación bien llevada"
+                    )
                 return (
                     "Soy Melissa. Respondo clientes, filtro interesados, explico servicios, muevo citas y me adapto al tono del negocio"
-                    " ||| Si quieres verlo bien, dime cómo se llama tu negocio y arrancamos"
+                    " ||| Si quieres verlo bien, pásame el nombre de tu negocio y arrancamos"
+                )
+            if has_bound_business:
+                return (
+                    f"Yo sería la que lleva el WhatsApp de {current_business_name}"
+                    " ||| si quieres, háblame como cliente y te muestro cómo respondería"
                 )
             return (
                 "Hola, soy Melissa. Llevo chats de negocio como si ya estuviera dentro del equipo"
@@ -13889,6 +13957,9 @@ REGLAS EXTRA DE ESTA DEMO:
 - no dejes frases colgadas ni respuestas cortadas
 """
             response = await _llm(system_prompt, user_block, temp=0.76, max_t=240, model_tier="reasoning")
+            if business_name and (force_stage == "re-ground" or explain_name):
+                if _demo_owner_reground_needs_cleanup(response):
+                    response = None
             if _demo_owner_reply_is_low_quality(response) or _demo_owner_missing_required_detail(text, response):
                 repair_prompt = system_prompt + """
 REPARA LA RESPUESTA:
@@ -13898,8 +13969,15 @@ REPARA LA RESPUESTA:
 - no dejes una burbuja sola como "puedes", "claro" o "sí"
 """
                 response = await _llm(repair_prompt, user_block, temp=0.62, max_t=240, model_tier="reasoning")
+            if business_name and (force_stage == "re-ground" or explain_name):
+                if _demo_owner_reground_needs_cleanup(response):
+                    response = None
             if _demo_owner_reply_is_low_quality(response) or _demo_owner_missing_required_detail(text, response):
-                response = _demo_owner_last_resort(text, explain_name=explain_name)
+                response = _demo_owner_last_resort(
+                    text,
+                    explain_name=explain_name,
+                    current_business_name=business_name,
+                )
             _save("user", text)
             return _send(response)
 
@@ -14238,12 +14316,27 @@ SIN mayúscula inicial (a menos que sea nombre propio). Sin punto al final. Sin 
 Máximo 1 oración por burbuja. Natural y seguro."""
 
             _save("user", text)
-            r = await _llm(prompt, f"negocio: {nombre}", max_t=220)
-            if not r:
-                if found:
+            if found:
+                r = await _llm(prompt, f"negocio: {nombre}", max_t=220)
+                if _demo_owner_reply_is_low_quality(r):
+                    repair_prompt = prompt + """
+
+REPARA ACTIVACIÓN:
+- completa cada burbuja
+- no dejes frases colgadas ni cortadas
+- no saques una sola palabra suelta como segunda o tercera burbuja
+- demuestra que ya te ubicaste con el negocio
+- termina invitando a que te escriban como cliente real
+"""
+                    r = await _llm(repair_prompt, f"negocio: {nombre}", temp=0.62, max_t=220, model_tier="reasoning")
+                if not r or _demo_owner_reply_is_low_quality(r):
                     r = f"ya tengo {nombre} ||| ya me ubiqué con cómo tendría que sonar esto ||| escríbeme como si fueras un cliente a ver qué pasa"
-                else:
-                    r = f"listo, ya tengo {nombre} ||| ya me ubiqué con el negocio ||| escríbeme como si fueras un cliente"
+            else:
+                r = (
+                    f"listo, ya tengo {nombre}"
+                    f" ||| todavía no encontré información pública confiable, así que la mejor demo es desde el chat mismo"
+                    f" ||| escríbeme como si fueras un cliente y arranco"
+                )
 
             # ── Burbuja extra: confirmación del link ─────────────────────────
             # Solo si encontramos info real (no cuando usamos el fallback de Google search)
@@ -14407,14 +14500,37 @@ Muy corta. Sin punto al final. En minúscula. Sin ¿ ni ¡.""",
         _is_meta = any(s in _text_low for s in _meta_signals)
 
         if _is_meta and not detected_cmd:
-            import random as _rm
+            explain_name = any(s in _text_low for s in ["para que","para qué","por que","por qué","no quiero","no te voy","no te doy"])
+            if business_name:
+                return await _demo_owner_onboarding_reply(
+                    explain_name=explain_name,
+                    force_stage="re-ground",
+                )
+            # Si todavía no hay negocio cargado, seguimos en la capa de identidad demo.
+            return _demo_identity_response(text, explain_name=explain_name)
+
+        _owner_demo_signals = [
+            "hagamos una demo", "hagamos la demo", "hagamos una simul",
+            "vale hagamos", "quiero ver como respondes", "quiero ver cómo respondes",
+            "quiero ver como atiendes", "quiero ver cómo atiendes",
+            "arranquemos la demo", "arranquemos", "simulemos",
+        ]
+        if business_name and not detected_cmd and any(signal in _text_low for signal in _owner_demo_signals):
             _save("user", text)
-            # Si preguntan "para qué" el nombre — explicar sin revelar que es IA
-            if any(s in _text_low for s in ["para que","para qué","por que","por qué","no quiero","no te voy","no te doy"]):
-                return _demo_identity_response(text, explain_name=True)
-            # Si preguntan si es real/bot/IA — esquivar con naturalidad, nunca confirmar ni negar como robot
-            else:
-                return _demo_identity_response(text)
+            sim_prompt = f"""Eres Melissa. Ya sabes que el negocio es "{business_name}".
+Responde en 2 burbujas (|||), breve y natural.
+No hables como cliente. No te presentes otra vez. No expliques el sistema.
+Deja claro que ya pueden empezar la demo y pídeles que te escriban como si fueran un cliente real.
+Sin punto final."""
+            sim_reply = await _llm(sim_prompt, text, temp=0.66, max_t=120)
+            sim_bubbles = [part.strip() for part in re.split(r"\s*\|\|\|\s*", sim_reply or "") if part.strip()]
+            if (
+                _demo_owner_reply_is_low_quality(sim_reply)
+                or len(sim_bubbles) < 2
+                or not any(token in _normalize_conv_text(sim_reply or "") for token in ("cliente", "chat"))
+            ):
+                sim_reply = "de una ||| escríbeme como si fueras un cliente real y yo ya caigo en el chat"
+            return _send(sim_reply)
 
         # ── PASO 2: Comandos secretos ─────────────────────────────────────────
         if detected_cmd and business_name:
@@ -15938,7 +16054,11 @@ Si un campo no aplica o no se encontro, usa "" o []. Solo JSON, sin texto extra.
         Vista resumida para admins no técnicos.
         Muestra las últimas conversaciones y deja contexto para abrir una por número.
         """
-        chats = db.get_recent_patient_chats(limit=limit)
+        raw_chats = db.get_recent_patient_chats(limit=max(limit * 5, 20))
+        chats = [
+            chat for chat in raw_chats
+            if not self._is_synthetic_chat_id(str(chat.get("chat_id") or "").strip())
+        ][:limit]
         if not chats:
             return ["Melissa no ha tenido conversaciones con pacientes todavía."]
 
@@ -15981,6 +16101,7 @@ Si un campo no aplica o no se encontro, usa "" o []. Solo JSON, sin texto extra.
         admin_chat_id: str = "",
         limit: int = 10,
         show_all: bool = False,
+        label_override: str = "",
     ) -> List[str]:
         """
         Muestra un preview corto por defecto y la conversación completa si el admin lo pide.
@@ -16012,7 +16133,7 @@ Si un campo no aplica o no se encontro, usa "" o []. Solo JSON, sin texto extra.
 
         self._last_reviewed_chat = patient_chat_id
 
-        label = patient_name or patient_chat_id
+        label = patient_name or (label_override or "").strip() or patient_chat_id
         visible = msgs if show_all else msgs[-limit:]
         header = (
             f"Conversación completa con {label}"
@@ -17315,6 +17436,28 @@ escriba EXACTAMENTE como él. Primera persona, directo."""
             db.save_message(chat_id, "assistant", reply_text if reply else "")
             return self._split_bubbles(reply_text)
 
+        selection_idx = _extract_conversation_selection(text_low)
+        if selection_idx:
+            show_all = _wants_all_messages(text_low)
+            direct_selection = any(
+                token in text_low
+                for token in (
+                    "conversacion", "conversación", "chat", "mensajes",
+                    "hablado", "hablaste", "mostrame", "muestrame",
+                    "muéstrame", "enseñame", "ensename",
+                )
+            )
+            if direct_selection:
+                reply = await self._admin_show_recent_conversation_selection(
+                    chat_id,
+                    selection_idx,
+                    show_all=show_all,
+                )
+                reply_text = self._apply_admin_output_pipeline(" ||| ".join(reply), chat_id, clinic, user_msg=text)
+                db.save_message(chat_id, "user", text)
+                db.save_message(chat_id, "assistant", reply_text if reply else "")
+                return self._split_bubbles(reply_text)
+
         tone_complaints = [
             "hablas raro", "no me gusta cómo hablas", "no me gusta como hablas",
             "estás rara", "estas rara", "eso suena robot", "suenas robot",
@@ -17908,6 +18051,34 @@ No hables como dashboard, soporte técnico ni consola."""
         if value in {"status@broadcast"} or value.endswith("@newsletter"):
             return True
         return False
+
+    async def _admin_show_recent_conversation_selection(
+        self,
+        admin_chat_id: str,
+        selection_idx: int,
+        *,
+        show_all: bool = False,
+    ) -> List[str]:
+        chats = db.get_recent_patient_chats(limit=max(selection_idx + 8, 20))
+        chats = [
+            chat for chat in chats
+            if not self._is_synthetic_chat_id(str(chat.get("chat_id") or "").strip())
+        ]
+        if not chats:
+            return ["Melissa no ha tenido conversaciones reales todavía."]
+        if selection_idx < 1 or selection_idx > len(chats):
+            return [f"No encontré una conversación {selection_idx} en la lista reciente."]
+        selected_chat_id = str(chats[selection_idx - 1].get("chat_id") or "").strip()
+        selected_label = str(chats[selection_idx - 1].get("name") or "").strip()
+        if not selected_chat_id:
+            return ["No pude abrir esa conversación."]
+        return await self._admin_show_patient_chat_preview(
+            selected_chat_id,
+            admin_chat_id=admin_chat_id,
+            limit=10,
+            show_all=show_all,
+            label_override=selected_label,
+        )
 
     def _admin_recent_chat_snapshot(self, owner_chat_id: str, clinic: Dict) -> List[str]:
         admin_name = "Santiago"
@@ -19489,7 +19660,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Melissa v8.0",
     description="Melissa V8.0 — Agente de Recepción Hipernaturalmente Humana",
-    version="8.0.3",
+    version="8.0.4",
     lifespan=lifespan
 )
 
@@ -19932,7 +20103,7 @@ async def health():
 
     return {
         "status":         "online",
-        "version":        "8.0.3",
+        "version":        "8.0.4",
         "clinic":         clinic.get("name", "sin configurar"),
         "sector":         Config.SECTOR or clinic.get("sector", "otro"),
         "setup_done":     bool(clinic.get("setup_done")),
@@ -27862,6 +28033,23 @@ def _patch_admin_dispatcher_trainer():
                     str(selected.get("chat_id") or ""),
                     admin_chat_id=chat_id,
                     limit=10,
+                    label_override=str(selected.get("name") or "").strip(),
+                )
+        if selection_idx and not pending_browser.get("action"):
+            detailed_subject = any(
+                token in text_low
+                for token in (
+                    "conversacion", "conversación", "chat", "mensajes",
+                    "hablado", "hablaste", "mostrame", "muestrame",
+                    "muéstrame", "enseñame", "ensename",
+                )
+            )
+            if detailed_subject:
+                show_all = _wants_all_messages(text_low)
+                return await self._admin_show_recent_conversation_selection(
+                    chat_id,
+                    selection_idx,
+                    show_all=show_all,
                 )
 
         # ── Comandos del trainer (modo admin normal) ───────────────────────────

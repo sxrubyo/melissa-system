@@ -154,11 +154,17 @@ def _extract_conversation_selection(text: str) -> Optional[int]:
     normalized = _normalize_conv_text(text)
     if not normalized:
         return None
-    match = re.search(r"\bver\s+(\d{1,2})\b", normalized)
+    match = re.search(r"\b(?:ver|chat|conversacion|conversación)\s+(\d{1,2})\b", normalized)
+    if match:
+        return int(match.group(1))
+    match = re.search(r"\b(?:conversacion|conversación|chat)\s+numero\s+(\d{1,2})\b", normalized)
     if match:
         return int(match.group(1))
     for token, idx in _ADMIN_CONVERSATION_ORDINALS.items():
-        if re.search(rf"\b{re.escape(token)}\b", normalized):
+        if re.search(
+            rf"\b(?:ver|mostrar|muestrame|muéstrame|ensename|enséñame|conversacion|conversación|chat)?\s*{re.escape(token)}\b",
+            normalized,
+        ):
             return idx
     return None
 

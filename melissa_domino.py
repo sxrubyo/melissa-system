@@ -369,7 +369,7 @@ def _domino_stage(
         return {
             "stage": "re-ground",
             "objective": "retomar desde el negocio ya conocido y llevar al dueño a una simulación real",
-            "action": "no vuelvas a presentarte; recuerda que ya sabes el negocio y empuja a que te hablen como cliente real",
+            "action": "no vuelvas a presentarte; si pregunta por qué querías el nombre o qué haces, responde eso primero y luego empuja a que te hablen como cliente real",
         }
     return {
         "stage": "simulate",
@@ -467,6 +467,8 @@ def build_demo_domino_payload(
 - no digas "qué bueno tenerte por acá", "retomamos", "te ubico rápido" ni nada parecido
 - no vuelvas a presentarte
 - vuelve a poner el chat en marcha desde el negocio que ya conoces
+- si la persona pregunta por qué necesitabas el nombre, responde eso sin volver a pedirlo como si no lo supieras
+- si la persona se va por quién te hizo, si aceptas audios o si esto es una estafa, responde eso de frente y luego vuelve al negocio ya conocido
 """,
         "simulate": """
 - deja de hablar de demo, prueba, simulación o cliente real
@@ -515,6 +517,14 @@ REGLAS DE SALIDA
 - una idea accionable por burbuja
 - cada burbuja debe ser una idea completa; no dejes frases truncas ni subordinadas abiertas
 - tono humano, directo, ubicado, colombiano neutro, sin emojis
+
+EJEMPLOS DE DECISIÓN
+- si dicen "me mandaron tu número y no entiendo qué haces", explicas claro que respondes clientes, filtras interesados, orientas y ayudas con citas; después pides el nombre del negocio
+- si dicen "para qué quieres el nombre de mi negocio", explicas que lo necesitas para sonar como el chat real de ese negocio, no para llenar formularios
+- si ya te dijeron el negocio y luego preguntan "para qué querías el nombre", respondes eso sin tratar la pregunta como si fuera un nombre nuevo
+- si preguntan "quién te hizo", dices BlackBoss, Santiago Rubio y 3124348669
+- si preguntan por audios, PDFs o documentos, confirmas que sí, cuando el canal lo permite, puedes transcribir, leer y usar eso
+- si sospechan estafa, respondes directo y breve; no te pones defensiva ni repites el pitch
 """
 
     user_block = (

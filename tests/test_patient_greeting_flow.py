@@ -305,6 +305,13 @@ def test_is_synthetic_chat_id_filters_probe_like_demo_ids() -> None:
     assert not runtime._is_synthetic_chat_id("573001112233@s.whatsapp.net")
 
 
+def test_extract_conversation_selection_understands_conversation_number_phrase() -> None:
+    from melissa_core.first_turn_ops import _extract_conversation_selection
+
+    assert _extract_conversation_selection("muestrame la conversacion 1") == 1
+    assert _extract_conversation_selection("quiero ver el chat numero 2") == 2
+
+
 def test_normalize_first_contact_response_drops_duplicate_intro_bubble() -> None:
     module = load_melissa_module()
 
@@ -435,22 +442,34 @@ def test_admin_recent_conversation_browser_shows_six_and_stores_context() -> Non
     runtime._admin_pending = {}
 
     module.db = types.SimpleNamespace(
-        get_recent_patient_chats=lambda limit=10: [
-            {
-                "chat_id": f"57300000000{i}",
-                "name": f"Paciente {i}",
-                "message_count": 10 + i,
-                "last_message": "2026-04-27T04:30:00",
-                "last_user_msg": f"mensaje {i}",
-            }
-            for i in range(1, 9)
-        ][:limit]
+        get_recent_patient_chats=lambda limit=10: (
+            [
+                {
+                    "chat_id": "owner-demo-1",
+                    "name": "Sintético",
+                    "message_count": 99,
+                    "last_message": "2026-04-27T05:30:00",
+                    "last_user_msg": "probe",
+                }
+            ]
+            + [
+                {
+                    "chat_id": f"57300000000{i}",
+                    "name": f"Paciente {i}",
+                    "message_count": 10 + i,
+                    "last_message": "2026-04-27T04:30:00",
+                    "last_user_msg": f"mensaje {i}",
+                }
+                for i in range(1, 9)
+            ]
+        )[:limit]
     )
 
     result = asyncio.run(runtime._admin_show_recent_conversation_browser("admin-1", limit=6))
 
     text = result[0]
     assert "Últimas 6 conversaciones" in text
+    assert "Sintético" not in text
     assert "Paciente 1" in text
     assert "Paciente 6" in text
     assert "Paciente 7" not in text
@@ -479,6 +498,111 @@ def test_admin_patient_chat_preview_defaults_to_last_ten_messages() -> None:
     assert "mensaje 6" in text
     assert "mensaje 14" in text
     assert runtime._admin_pending["admin-1"]["selected_chat_id"] == "573000000001"
+
+
+def test_admin_recent_conversation_selection_opens_preview_without_pending_browser() -> None:
+    module = load_melissa_module()
+    runtime = module.MelissaUltra.__new__(module.MelissaUltra)
+    runtime._admin_pending = {}
+    runtime._last_reviewed_chat = None
+
+    module.db = types.SimpleNamespace(
+        get_recent_patient_chats=lambda limit=10: [
+            {
+                "chat_id": "owner-demo-1",
+                "name": "Sintético",
+                "message_count": 3,
+                "last_message": "2026-04-27T05:30:00",
+                "last_user_msg": "probe",
+            },
+            {
+                "chat_id": "573000000001",
+                "name": "Paciente Uno",
+                "message_count": 8,
+                "last_message": "2026-04-27T04:30:00",
+                "last_user_msg": "hola",
+            },
+            {
+                "chat_id": "573000000002",
+                "name": "Paciente Dos",
+                "message_count": 6,
+                "last_message": "2026-04-27T04:20:00",
+                "last_user_msg": "precio",
+            },
+        ][:limit],
+        get_patient_conversation=lambda chat_id, limit=30: [
+            {"role": "user", "ts": "2026-04-27T04:20:00", "content": "hola"},
+            {"role": "assistant", "ts": "2026-04-27T04:21:00", "content": "respuesta"},
+        ],
+        _conn=None,
+    )
+
+    result = asyncio.run(
+        runtime._admin_show_recent_conversation_selection("admin-1", 1)
+    )
+
+    text = result[0]
+    assert "Paciente Uno" in text
+    assert "Sintético" not in text
+    assert runtime._admin_pending["admin-1"]["selected_chat_id"] == "573000000001"
+
+
+def test_admin_handler_understands_direct_conversation_selection_without_pending_browser() -> None:
+    module = load_melissa_module()
+    runtime = module.MelissaUltra.__new__(module.MelissaUltra)
+    runtime._admin_pending = {}
+    runtime._pending_buffers = {}
+    runtime._chat_routes = {}
+    runtime._remember_route = lambda chat_id, route=None: None
+    runtime._resolve_route = lambda chat_id, route=None: {"platform": "whatsapp"}
+    runtime._apply_admin_output_pipeline = lambda text, *args, **kwargs: text
+    runtime._split_bubbles = lambda text, **kwargs: [part.strip() for part in text.split("|||") if part.strip()]
+
+    module.owner_style_controller = None
+    module.prompt_evolver = None
+    module.trainer_gateway = None
+    module._NOVA_AVAILABLE = False
+    module.Config.NOVA_ENABLED = False
+    module.kb = None
+
+    module.db = types.SimpleNamespace(
+        get_admin=lambda chat_id: {"name": "Santiago"},
+        get_history=lambda chat_id, limit=8: [],
+        save_message=lambda *args, **kwargs: None,
+        get_recent_patient_chats=lambda limit=10: [
+            {
+                "chat_id": "owner-demo-1",
+                "name": "Sintético",
+                "message_count": 3,
+                "last_message": "2026-04-27T05:30:00",
+                "last_user_msg": "probe",
+            },
+            {
+                "chat_id": "573000000001",
+                "name": "Paciente Uno",
+                "message_count": 8,
+                "last_message": "2026-04-27T04:30:00",
+                "last_user_msg": "hola",
+            },
+        ][:limit],
+        get_patient_conversation=lambda chat_id, limit=30: [
+            {"role": "user", "ts": "2026-04-27T04:20:00", "content": "hola"},
+            {"role": "assistant", "ts": "2026-04-27T04:21:00", "content": "respuesta"},
+        ],
+        _conn=None,
+    )
+
+    result = asyncio.run(
+        runtime._handle_admin_or_setup(
+            "admin-1",
+            "muestrame que has hablado en la conversacion 1",
+            {"name": "Melissa Demo", "admin_chat_ids": ["admin-1"], "setup_done": True},
+        )
+    )
+
+    text = result[0]
+    assert "Paciente Uno" in text
+    assert "Últimos 2 mensajes" in text
 
 
 def test_persona_forbidden_patterns_include_helpdesk_openers() -> None:
