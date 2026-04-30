@@ -13444,12 +13444,14 @@ class MelissaUltra:
         btone_key   = sk + "_tone"      # tono detectado: SALUD PREMIUM | PREMIUM | SALUD | RETAIL | GENERAL
         bmodel_key  = sk + "_model"     # proveedor LLM activo: auto|groq|gemini|openrouter
         blearn_key  = sk + "_learn"     # modo aprendizaje manual: cuántas preguntas llevamos
+        bsim_key    = sk + "_sim_mode"  # modo simulación cliente en el mismo chat del dueño
 
         business_name  = self._demo_sessions.get(bname_key, "")
         business_ctx   = self._demo_sessions.get(bctx_key, "")
         found_online   = self._demo_sessions.get(bfound_key, False)
         persona        = self._demo_sessions.get(bpersona_key, "amigable")
         demo_model_pref= self._demo_sessions.get(bmodel_key, "auto")  # auto|groq|gemini|openrouter
+        sim_mode_active = bool(self._demo_sessions.get(bsim_key, False))
 
         def _save(role, msg):
             if db:
@@ -13522,10 +13524,47 @@ class MelissaUltra:
         except Exception:
             demo_channel = str(Config.PLATFORM or "")
 
+        _pre_text_low = text.lower().strip()
+        _pre_core_blockers = (
+            "hagamos una demo",
+            "hagamos la demo",
+            "hagamos una simul",
+            "vale hagamos",
+            "arranquemos la demo",
+            "arranquemos",
+            "simulemos",
+            "quien eres",
+            "quién eres",
+            "que eres",
+            "qué eres",
+            "que haces",
+            "qué haces",
+            "como funcionas",
+            "cómo funcionas",
+            "para que",
+            "para qué",
+            "por que",
+            "por qué",
+            "quien te hizo",
+            "quién te hizo",
+            "como tenerte",
+            "cómo tenerte",
+            "aceptas audios",
+            "aceptas pdf",
+            "me mandaron tu numero",
+            "me mandaron tu número",
+        )
+
         # PATCH P3 — conversation_core solo cuando el negocio ya está cargado.
         # Sin business_name, el core usa contexto de la clínica real → T4 identidad errónea.
         demo_core_bubbles = None
-        if business_name:
+        if (
+            business_name
+            and not sim_mode_active
+            and not self._demo_should_use_patient_chat_path(text)
+            and not _pre_text_low.startswith("/")
+            and not any(marker in _pre_text_low for marker in _pre_core_blockers)
+        ):
             demo_core_bubbles = self._try_conversation_core(
                 clinic={
                     **clinic,
@@ -13662,9 +13701,9 @@ class MelissaUltra:
                 log.error(f"[demo] llm error: {e}")
                 return None
 
-        async def _llm_conv(sys_p, temp=0.85, max_t=180, model_tier="fast"):
+        async def _llm_conv(sys_p, temp=0.85, max_t=180, model_tier="fast", recent_limit=12):
             msgs = [{"role":"system","content":sys_p}]
-            for m in history[-12:]:
+            for m in history[-recent_limit:]:
                 msgs.append({"role":m["role"],"content":m["content"]})
             msgs.append({"role":"user","content":text})
             try:
@@ -13682,6 +13721,46 @@ class MelissaUltra:
             except Exception as e:
                 log.error(f"[demo] llm_conv error: {e}")
                 return None
+
+        async def _demo_llm_conv_quality_chain(
+            system_prompt: str,
+            *,
+            validator,
+            repair_instructions: str,
+            temp: float = 0.72,
+            max_t: int = 180,
+            model_tier: str = "fast",
+            recent_limit: int = 8,
+        ) -> Tuple[Optional[str], bool]:
+            attempts = [
+                (system_prompt, temp, max_t, model_tier, recent_limit),
+                (
+                    system_prompt
+                    + "\n\nREPARA LA RESPUESTA:\n"
+                    + repair_instructions.strip()
+                    + "\n- no repitas introducciones\n- no suenes a bot ni a guion de demo",
+                    0.58,
+                    max_t,
+                    "reasoning",
+                    recent_limit,
+                ),
+            ]
+            last_nonempty = None
+            had_output = False
+            for prompt_now, temp_now, max_now, tier_now, limit_now in attempts:
+                candidate = await _llm_conv(
+                    prompt_now,
+                    temp=temp_now,
+                    max_t=max_now,
+                    model_tier=tier_now,
+                    recent_limit=limit_now,
+                )
+                if candidate and candidate.strip():
+                    had_output = True
+                    last_nonempty = candidate
+                    if not validator(candidate):
+                        return candidate, True
+            return last_nonempty, had_output
 
         def _save(role, msg):
             if db:
@@ -13803,6 +13882,28 @@ class MelissaUltra:
                 "a las de tus clientes",
                 "de manera efectiva",
                 "para poder hacer esto",
+                "por favor",
+                "proceder",
+                "precisa y personalizada",
+                "interactuas con nuestros servicios",
+                "interactúas con nuestros servicios",
+                "de manera mas precisa",
+                "de manera más precisa",
+                "escribidme",
+                "vuestra",
+                "vuestro",
+                "vosotros",
+                "ayudaros",
+                "parece ser un lugar confiable",
+                "me gustaria saber mas sobre sus servicios",
+                "me gustaría saber más sobre sus servicios",
+                "de manera clara y concisa",
+                "atencion que brindan",
+                "atención que brindan",
+                "por favor escriban",
+                "quiero ver como interactuan",
+                "quiero ver cómo interactúan",
+                "pueden comenzar a escribir su consulta",
             )
             if any(token in lowered for token in banned):
                 return True
@@ -13859,6 +13960,141 @@ class MelissaUltra:
                 "como si fuera un cliente real hoy",
             )
             return any(token in lowered for token in low_signal_phrases)
+
+        def _demo_customer_reply_is_low_quality(raw_response: Optional[str]) -> bool:
+            lowered = _normalize_conv_text(raw_response or "")
+            if not lowered:
+                return True
+            if looks_fragmented_reply(raw_response or ""):
+                return True
+            parts = [part.strip() for part in re.split(r"\s*\|\|\|\s*|\n+", raw_response or "") if part.strip()]
+            if any(looks_fragmented_reply(part) for part in parts):
+                return True
+            safe_tail_words = {"hoy", "ahi", "ahí", "bien", "vale", "listo", "claro", "ti", "aqui", "aquí"}
+            for part in parts:
+                norm_part = _normalize_conv_text(part)
+                words = norm_part.split()
+                if len(words) >= 3 and len(words[-1]) <= 2 and words[-1] not in safe_tail_words:
+                    return True
+            bad_markers = (
+                "hola que necesitas",
+                "hola, que necesitas",
+                "cuentame un poco mas y te voy guiando",
+                "cuéntame un poco más y te voy guiando",
+                "por favor procedan",
+                "de manera efectiva",
+                "simular la interaccion",
+                "simular la interacción",
+                "cliente real de",
+                "estoy lista para empezar",
+                "como si fueran un cliente real",
+                "soy melissa, la asesora virtual de",
+                "escribidme",
+                "vuestra",
+                "vuestro",
+                "vosotros",
+                "ayudaros",
+                "parece ser un lugar confiable",
+                "quiero ver como interactuan",
+                "quiero ver cómo interactúan",
+                "pueden comenzar a escribir su consulta",
+            )
+            return any(marker in lowered for marker in bad_markers)
+
+        def _demo_customer_missing_required_detail(user_text: str, raw_response: Optional[str]) -> bool:
+            lowered_user = _normalize_conv_text(user_text or "")
+            lowered_resp = _normalize_conv_text(raw_response or "")
+            if not lowered_resp:
+                return True
+            if lowered_user in {"hola", "hola buenas", "buenas", "buenas tardes", "buenos dias", "buenos días", "buenas noches", "hey"}:
+                if not any(token in lowered_resp for token in ("hola", "buenas", "bienvenida", "bienvenido", "cuentame", "cuéntame", "revisar", "ayudo", "ayudar")):
+                    return True
+            if any(token in lowered_user for token in ("precio", "cuanto", "cuánto", "vale", "costo", "coste")):
+                if not any(token in lowered_resp for token in ("precio", "cuesta", "valor", "dato", "confirmo", "averiguo", "depende")):
+                    return True
+                if not found_online and any(token in lowered_resp for token in ("aproximado", "aproximada", "aprox", "rango", "desde")):
+                    return True
+            if any(token in lowered_user for token in ("cita", "agendar", "agenda", "seguimos", "siguiente paso", "como seguimos", "cómo seguimos")):
+                if not any(token in lowered_resp for token in ("cita", "agendo", "agenda", "hora", "horario", "nombre", "confirmo", "paso")):
+                    return True
+                if any(token in lowered_resp for token in ("link", "enlace", "seleccionar una fecha", "seleccionar fecha", "calendario")):
+                    return True
+            if "miedo" in lowered_user:
+                if not any(token in lowered_resp for token in ("miedo", "normal", "natural", "conservador", "suave")):
+                    return True
+            return False
+
+        def _demo_customer_last_resort(user_text: str) -> str:
+            lowered = _normalize_conv_text(user_text or "")
+            if any(token in lowered for token in ("cita", "agendar", "agenda", "seguimos", "siguiente paso", "como seguimos", "cómo seguimos")):
+                return (
+                    "si quieres agendar, te tomo el nombre y el horario que te sirva"
+                    " ||| con eso te dejo el siguiente paso listo"
+                )
+            if any(token in lowered for token in ("precio", "cuanto", "cuánto", "vale", "costo", "coste")):
+                return (
+                    "no tengo ese dato exacto ahora"
+                    " ||| si quieres, te lo confirmo y te lo paso por aquí"
+                )
+            if "miedo" in lowered:
+                return (
+                    "ese miedo es normal"
+                    " ||| acá lo trabajan muy conservador para que se vea natural"
+                )
+            if any(token in lowered for token in ("audio", "audios", "pdf", "imagen", "foto", "documento")):
+                return (
+                    "sí, me lo puedes mandar por aquí"
+                    " ||| lo reviso y seguimos desde eso"
+                )
+            return "te sigo por aquí ||| cuéntame qué te gustaría revisar y lo vemos"
+
+        async def _demo_llm_quality_chain(
+            system_prompt: str,
+            user_prompt: str,
+            *,
+            validator,
+            repair_instructions: str,
+            temp: float = 0.76,
+            max_t: int = 240,
+            model_tier: str = "reasoning",
+        ) -> Tuple[Optional[str], bool]:
+            attempts = [
+                (system_prompt, temp, max_t, model_tier),
+                (
+                    system_prompt
+                    + "\n\nREPARA LA RESPUESTA:\n"
+                    + repair_instructions.strip()
+                    + "\n- responde mejor, pero sin cambiar de tema\n- no uses frases corporativas ni consultoras",
+                    0.62,
+                    max_t,
+                    "reasoning",
+                ),
+                (
+                    system_prompt
+                    + "\n\nRESPUESTA FINAL OBLIGATORIA:\n"
+                    + repair_instructions.strip()
+                    + "\n- entrega una versión final limpia, concreta y humana\n- no salgas por la tangente\n- no recites instrucciones",
+                    0.45,
+                    max(max_t, 260),
+                    "reasoning",
+                ),
+            ]
+            last_nonempty = None
+            had_output = False
+            for prompt_now, temp_now, max_now, tier_now in attempts:
+                candidate = await _llm(
+                    prompt_now,
+                    user_prompt,
+                    temp=temp_now,
+                    max_t=max_now,
+                    model_tier=tier_now,
+                )
+                if candidate and candidate.strip():
+                    had_output = True
+                    last_nonempty = candidate
+                    if not validator(candidate):
+                        return candidate, True
+            return last_nonempty, had_output
 
         def _demo_owner_last_resort(
             user_text: str,
@@ -13956,23 +14192,34 @@ REGLAS EXTRA DE ESTA DEMO:
 - nunca menciones Nova, Clínica de las Américas ni branding heredado
 - no dejes frases colgadas ni respuestas cortadas
 """
-            response = await _llm(system_prompt, user_block, temp=0.76, max_t=240, model_tier="reasoning")
-            if business_name and (force_stage == "re-ground" or explain_name):
-                if _demo_owner_reground_needs_cleanup(response):
-                    response = None
-            if _demo_owner_reply_is_low_quality(response) or _demo_owner_missing_required_detail(text, response):
-                repair_prompt = system_prompt + """
-REPARA LA RESPUESTA:
+            def _owner_validator(candidate: Optional[str]) -> bool:
+                lowered_candidate = _normalize_conv_text(candidate or "")
+                if business_name and (force_stage == "re-ground" or explain_name):
+                    if _demo_owner_reground_needs_cleanup(candidate):
+                        return True
+                    if explain_name:
+                        biz_tokens = [
+                            token for token in _normalize_conv_text(business_name).split()
+                            if len(token) >= 4
+                        ]
+                        if biz_tokens and not any(token in lowered_candidate for token in biz_tokens):
+                            return True
+                return _demo_owner_reply_is_low_quality(candidate) or _demo_owner_missing_required_detail(text, candidate)
+
+            response, had_model_output = await _demo_llm_quality_chain(
+                system_prompt,
+                user_block,
+                validator=_owner_validator,
+                repair_instructions="""
 - responde la pregunta actual con más claridad
 - si vas a pedir el nombre del negocio, hazlo solo después de responder
 - evita respuestas de una sola palabra o de una sola línea vacía
 - no dejes una burbuja sola como "puedes", "claro" o "sí"
-"""
-                response = await _llm(repair_prompt, user_block, temp=0.62, max_t=240, model_tier="reasoning")
-            if business_name and (force_stage == "re-ground" or explain_name):
-                if _demo_owner_reground_needs_cleanup(response):
-                    response = None
-            if _demo_owner_reply_is_low_quality(response) or _demo_owner_missing_required_detail(text, response):
+- si preguntan qué haces, menciona varias capacidades reales y luego pide el nombre del negocio sin vender humo
+- si preguntan para qué querías el nombre, explica que era para sonar como el chat real del negocio y hacer la demo bien ubicada
+""",
+            )
+            if not response and not had_model_output:
                 response = _demo_owner_last_resort(
                     text,
                     explain_name=explain_name,
@@ -14316,27 +14563,51 @@ SIN mayúscula inicial (a menos que sea nombre propio). Sin punto al final. Sin 
 Máximo 1 oración por burbuja. Natural y seguro."""
 
             _save("user", text)
-            if found:
-                r = await _llm(prompt, f"negocio: {nombre}", max_t=220)
-                if _demo_owner_reply_is_low_quality(r):
-                    repair_prompt = prompt + """
+            def _bind_validator(candidate: Optional[str]) -> bool:
+                lowered_candidate = _normalize_conv_text(candidate or "")
+                if not lowered_candidate:
+                    return True
+                if _demo_owner_reply_is_low_quality(candidate):
+                    return True
+                if not any(token in lowered_candidate for token in ("cliente", "chat")):
+                    return True
+                if not found and any(
+                    token in lowered_candidate
+                    for token in (
+                        "supongo que",
+                        "parece que",
+                        "creo que",
+                        "debe ser",
+                        "seguramente",
+                    )
+                ):
+                    return True
+                return False
 
-REPARA ACTIVACIÓN:
-- completa cada burbuja
-- no dejes frases colgadas ni cortadas
-- no saques una sola palabra suelta como segunda o tercera burbuja
-- demuestra que ya te ubicaste con el negocio
-- termina invitando a que te escriban como cliente real
+            bind_repair_rules = """
+- completa las 3 burbujas
+- no inventes nada si no encontraste info pública confiable
+- si no encontraste info, dilo de frente y mueve la demo al chat mismo
+- si sí encontraste info, demuestra que te ubicaste sin sonar a sistema
+- termina pidiendo que escriban como cliente real
 """
-                    r = await _llm(repair_prompt, f"negocio: {nombre}", temp=0.62, max_t=220, model_tier="reasoning")
-                if not r or _demo_owner_reply_is_low_quality(r):
+            r, bind_had_output = await _demo_llm_quality_chain(
+                prompt,
+                f"negocio: {nombre}",
+                validator=_bind_validator,
+                repair_instructions=bind_repair_rules,
+                temp=0.72,
+                max_t=220,
+            )
+            if not r and not bind_had_output:
+                if found:
                     r = f"ya tengo {nombre} ||| ya me ubiqué con cómo tendría que sonar esto ||| escríbeme como si fueras un cliente a ver qué pasa"
-            else:
-                r = (
-                    f"listo, ya tengo {nombre}"
-                    f" ||| todavía no encontré información pública confiable, así que la mejor demo es desde el chat mismo"
-                    f" ||| escríbeme como si fueras un cliente y arranco"
-                )
+                else:
+                    r = (
+                        f"listo, ya tengo {nombre}"
+                        f" ||| todavía no encontré información pública confiable, así que la mejor demo es desde el chat mismo"
+                        f" ||| escríbeme como si fueras un cliente y arranco"
+                    )
 
             # ── Burbuja extra: confirmación del link ─────────────────────────
             # Solo si encontramos info real (no cuando usamos el fallback de Google search)
@@ -14506,8 +14777,7 @@ Muy corta. Sin punto al final. En minúscula. Sin ¿ ni ¡.""",
                     explain_name=explain_name,
                     force_stage="re-ground",
                 )
-            # Si todavía no hay negocio cargado, seguimos en la capa de identidad demo.
-            return _demo_identity_response(text, explain_name=explain_name)
+            return await _demo_owner_onboarding_reply(explain_name=explain_name)
 
         _owner_demo_signals = [
             "hagamos una demo", "hagamos la demo", "hagamos una simul",
@@ -14516,21 +14786,131 @@ Muy corta. Sin punto al final. En minúscula. Sin ¿ ni ¡.""",
             "arranquemos la demo", "arranquemos", "simulemos",
         ]
         if business_name and not detected_cmd and any(signal in _text_low for signal in _owner_demo_signals):
+            self._demo_sessions[bsim_key] = True
+            sim_mode_active = True
             _save("user", text)
             sim_prompt = f"""Eres Melissa. Ya sabes que el negocio es "{business_name}".
 Responde en 2 burbujas (|||), breve y natural.
 No hables como cliente. No te presentes otra vez. No expliques el sistema.
 Deja claro que ya pueden empezar la demo y pídeles que te escriban como si fueran un cliente real.
 Sin punto final."""
-            sim_reply = await _llm(sim_prompt, text, temp=0.66, max_t=120)
-            sim_bubbles = [part.strip() for part in re.split(r"\s*\|\|\|\s*", sim_reply or "") if part.strip()]
-            if (
-                _demo_owner_reply_is_low_quality(sim_reply)
-                or len(sim_bubbles) < 2
-                or not any(token in _normalize_conv_text(sim_reply or "") for token in ("cliente", "chat"))
-            ):
+            def _sim_validator(candidate: Optional[str]) -> bool:
+                sim_bubbles = [part.strip() for part in re.split(r"\s*\|\|\|\s*", candidate or "") if part.strip()]
+                return (
+                    _demo_owner_reply_is_low_quality(candidate)
+                    or len(sim_bubbles) < 2
+                    or not any(token in _normalize_conv_text(candidate or "") for token in ("cliente", "chat"))
+                )
+
+            sim_reply, sim_had_output = await _demo_llm_quality_chain(
+                sim_prompt,
+                text,
+                validator=_sim_validator,
+                repair_instructions="""
+- no te quedes en "perfecto" ni en una frase colgada
+- deja clarísimo que ya pueden empezar
+- pide que escriban como cliente real
+- usa 2 burbujas como máximo
+""",
+                temp=0.66,
+                max_t=120,
+            )
+            if not sim_reply and not sim_had_output:
                 sim_reply = "de una ||| escríbeme como si fueras un cliente real y yo ya caigo en el chat"
             return _send(sim_reply)
+
+        if business_name and not detected_cmd and (sim_mode_active or self._demo_should_use_patient_chat_path(text)):
+            self._demo_sessions[bsim_key] = True
+            sim_mode_active = True
+            _save("user", text)
+            sim_history = [
+                msg for msg in history
+                if _normalize_conv_text(str(msg.get("content") or ""))
+                not in {
+                    "vale hagamos una demo entonces",
+                    "hagamos una demo",
+                    "hagamos la demo",
+                    "de una escríbeme como si fueras un cliente real y yo ya caigo en el chat",
+                }
+            ]
+            if found_online and business_ctx:
+                sim_ctx_block = f"""INFORMACIÓN DEL NEGOCIO:
+{business_ctx[:700]}
+
+Si el cliente pregunta por datos concretos y los tienes aquí, dáselos directo.
+Si no tienes el dato, dilo claro y mueve el chat con el siguiente paso."""
+            else:
+                sim_ctx_block = (
+                    f"Negocio actual: {business_name}. "
+                    "No inventes datos específicos que no tengas; responde útil y natural."
+                )
+            sim_prompt = f"""Eres Melissa atendiendo el WhatsApp real de {business_name}.
+Ya están en plena conversación con una persona interesada.
+No vuelvas a presentarte salvo que de verdad te lo pregunten.
+No menciones demo, simulación, dueño, prueba, negocio, sistema ni IA salvo que te lo pregunten directo.
+
+CONTEXTO DEL NEGOCIO
+{sim_ctx_block}
+
+ESTILO
+- máximo 2 burbujas, separadas por |||
+- una idea por burbuja
+- sin introducciones vacías ni frases de call center
+- responde primero lo que preguntan y luego mueve el chat un paso
+- si no tienes un dato, dilo claro y ofrece el siguiente paso
+- si hay miedo u objeción, valídalo antes de avanzar
+
+PROHIBIDO
+- reiniciar la conversación
+- decir "cuéntame un poco más y te voy guiando"
+- decir "hola qué necesitas"
+- sonar a demo o guion de prueba
+- soltar texto administrativo tipo "por favor procedan"
+
+SI SOLO SALUDAN
+- responde corto, cálido y humano
+- ubica el chat en el negocio sin sonar a presentación robótica
+- luego abre la conversación con una pregunta natural
+- ejemplo bueno: "hola, Melissa por acá en {business_name} ||| cuéntame qué te gustaría revisar"
+
+SI PREGUNTAN PRECIO Y NO TIENES EL DATO
+- no inventes aproximados ni rangos
+- di claro que no tienes el dato exacto y que lo confirmas
+- ejemplo bueno: "ese dato exacto no lo tengo ahora ||| si quieres, te lo confirmo por aquí"
+
+SI QUIEREN AGENDAR
+- no prometas links, calendarios ni botones si no existen
+- pide día u horario y sigue por el chat
+"""
+            customer_history = sim_history[-8:]
+            customer_had_output = False
+            customer_reply = None
+            original_history = history
+            history = customer_history
+            try:
+                customer_reply, customer_had_output = await _demo_llm_conv_quality_chain(
+                    sim_prompt,
+                    validator=lambda candidate: (
+                        _demo_customer_reply_is_low_quality(candidate)
+                        or _demo_customer_missing_required_detail(text, candidate)
+                    ),
+                    repair_instructions="""
+- responde como una asesora humana del negocio, no como una introducción
+- no reinicies el chat
+- si preguntan por precio, responde eso primero
+- si preguntan por cita o siguiente paso, muévelos directo hacia el agendado
+- si expresan miedo, valídalo y responde con seguridad
+""",
+                    temp=0.70,
+                    max_t=170,
+                    model_tier="fast",
+                    recent_limit=8,
+                )
+            finally:
+                history = original_history
+            if not customer_reply and not customer_had_output:
+                customer_reply = _demo_customer_last_resort(text)
+            return _send(customer_reply)
 
         # ── PASO 2: Comandos secretos ─────────────────────────────────────────
         if detected_cmd and business_name:
@@ -15084,16 +15464,24 @@ OBJECIONES
 """
 
         _save("user", text)
-        r = await _llm_conv(sys_p)
-        if not r:
-            # PATCH P2 — fallback también usa solo business_name, sin heredar clínica real
-            _fallback_clinic = {"name": business_name}
-            r = _normalize_first_contact_response(
-                "Cuéntame un poco más y te voy guiando.",
-                _fallback_clinic,
-                text,
-                agent_name="Melissa",
-            )
+        r, had_model_output = await _demo_llm_conv_quality_chain(
+            sys_p,
+            validator=lambda candidate: (
+                _demo_customer_reply_is_low_quality(candidate)
+                or _demo_customer_missing_required_detail(text, candidate)
+            ),
+            repair_instructions="""
+- responde directo lo que te preguntaron
+- no reinicies la conversación ni te presentes otra vez
+- no uses texto genérico como 'cuéntame un poco más'
+""",
+            temp=0.72,
+            max_t=180,
+            model_tier="fast",
+            recent_limit=8,
+        )
+        if not r and not had_model_output:
+            r = _demo_customer_last_resort(text)
         # Solo revelar truco si la respuesta tiene contenido real (>60 chars)
         # y no termina en pregunta (no interrumpir el flujo de la conversación)
         if _should_reveal_trick and r and len(r.replace("|||","").strip()) > 60:
@@ -19660,7 +20048,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Melissa v8.0",
     description="Melissa V8.0 — Agente de Recepción Hipernaturalmente Humana",
-    version="8.0.4",
+    version="8.0.5",
     lifespan=lifespan
 )
 
@@ -20103,7 +20491,7 @@ async def health():
 
     return {
         "status":         "online",
-        "version":        "8.0.4",
+        "version":        "8.0.5",
         "clinic":         clinic.get("name", "sin configurar"),
         "sector":         Config.SECTOR or clinic.get("sector", "otro"),
         "setup_done":     bool(clinic.get("setup_done")),

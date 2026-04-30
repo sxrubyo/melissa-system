@@ -201,6 +201,9 @@ def test_demo_followup_meta_question_after_business_binding_uses_regrounded_llm(
     module = load_melissa_module()
 
     class _Engine:
+        def __init__(self) -> None:
+            self.meta_calls = 0
+
         async def complete(self, msgs, **kwargs):
             user = msgs[-1]["content"]
             if user.startswith("negocio: "):
@@ -209,13 +212,20 @@ def test_demo_followup_meta_question_after_business_binding_uses_regrounded_llm(
                     {"provider": "fake", "model": "fake"},
                 )
             if "para que querias el nombre de mi negocio" in user.lower():
+                self.meta_calls += 1
+                if self.meta_calls == 1:
+                    return (
+                        "te lo pedí para hablar como si ya llevara ese chat ||| así te muestro la demo sin inventar nada",
+                        {"provider": "fake", "model": "fake"},
+                    )
                 return (
-                    "te lo pedí para hablar como si ya llevara ese chat ||| así te muestro la demo sin inventar nada",
+                    "te lo pedí para hablar como si ya llevara el chat de Clinica America ||| así la demo te muestra mejor cómo respondería de verdad",
                     {"provider": "fake", "model": "fake"},
                 )
             return ("ok ||| sigo", {"provider": "fake", "model": "fake"})
 
-    runtime, _db = _build_demo_runtime(module, _Engine())
+    engine = _Engine()
+    runtime, _db = _build_demo_runtime(module, engine)
     clinic = {"name": "Nova", "sector": "otro", "services": ["Botox"]}
 
     asyncio.run(runtime._handle_demo_message("owner_meta_1", "mi negocio se llama Clinica America", clinic))
@@ -224,6 +234,7 @@ def test_demo_followup_meta_question_after_business_binding_uses_regrounded_llm(
     )
 
     joined = " ".join(result).lower()
+    assert engine.meta_calls >= 2
     assert "te lo pedí para hablar como si ya llevara el chat de clinica america" in joined
     assert "te pido el nombre de tu negocio" not in joined
     assert "soy melissa" not in joined
@@ -313,6 +324,9 @@ def test_demo_owner_simulation_start_repairs_truncated_launch_reply() -> None:
     module = load_melissa_module()
 
     class _Engine:
+        def __init__(self) -> None:
+            self.sim_calls = 0
+
         async def complete(self, msgs, **kwargs):
             user = msgs[-1]["content"]
             system = msgs[0]["content"]
@@ -322,10 +336,17 @@ def test_demo_owner_simulation_start_repairs_truncated_launch_reply() -> None:
                     {"provider": "fake", "model": "fake"},
                 )
             if "ya pueden empezar la demo" in system:
-                return ("Perfecto, entonces podemos", {"provider": "fake", "model": "fake"})
+                self.sim_calls += 1
+                if self.sim_calls == 1:
+                    return ("Perfecto, entonces podemos", {"provider": "fake", "model": "fake"})
+                return (
+                    "de una ||| escríbeme como si fueras un cliente real y yo ya caigo en el chat",
+                    {"provider": "fake", "model": "fake"},
+                )
             return ("ok ||| sigo", {"provider": "fake", "model": "fake"})
 
-    runtime, _db = _build_demo_runtime(module, _Engine())
+    engine = _Engine()
+    runtime, _db = _build_demo_runtime(module, engine)
     clinic = {"name": "Nova", "sector": "otro", "services": ["Botox"]}
 
     asyncio.run(runtime._handle_demo_message("owner_sim_bad_1", "mi negocio se llama Clinica America", clinic))
@@ -334,6 +355,7 @@ def test_demo_owner_simulation_start_repairs_truncated_launch_reply() -> None:
     )
 
     joined = " ".join(result).lower()
+    assert engine.sim_calls >= 2
     assert "cliente real" in joined
     assert "perfecto, entonces podemos" not in joined
 
@@ -347,8 +369,13 @@ def test_demo_business_activation_without_public_info_avoids_hallucinating_conte
 
         async def complete(self, msgs, **kwargs):
             self.calls += 1
+            if self.calls == 1:
+                return (
+                    "supongo que es un lugar donde ofrecen servicios medicos de calidad",
+                    {"provider": "fake", "model": "fake"},
+                )
             return (
-                "supongo que es un lugar donde ofrecen servicios medicos de calidad",
+                "listo, ya tengo Clinica America ||| todavía no encontré información pública confiable, así que la mejor demo es desde el chat mismo ||| escríbeme como si fueras un cliente y arranco",
                 {"provider": "fake", "model": "fake"},
             )
 
@@ -361,7 +388,7 @@ def test_demo_business_activation_without_public_info_avoids_hallucinating_conte
     )
 
     joined = " ".join(result).lower()
-    assert engine.calls == 0
+    assert engine.calls >= 2
     assert "todavía no encontré información pública confiable" in " ".join(result)
     assert "supongo que" not in joined
 
@@ -370,13 +397,23 @@ def test_demo_owner_onboarding_repairs_thin_capability_answer() -> None:
     module = load_melissa_module()
 
     class _Engine:
+        def __init__(self) -> None:
+            self.calls = 0
+
         async def complete(self, msgs, **kwargs):
+            self.calls += 1
             user = msgs[-1]["content"].lower()
             if "me mandaron tu numero" in user or "no entiendo que haces" in user:
-                return ("Aquí lo que hago es llevar las conversaciones", {"provider": "fake", "model": "fake"})
+                if self.calls == 1:
+                    return ("Aquí lo que hago es llevar las conversaciones", {"provider": "fake", "model": "fake"})
+                return (
+                    "Respondo clientes, filtro interesados, oriento y ayudo con citas ||| también reporto lo que pasa en el chat y acepto feedback ||| si quieres verlo bien, pásame el nombre de tu negocio y arrancamos",
+                    {"provider": "fake", "model": "fake"},
+                )
             return ("ok ||| sigo", {"provider": "fake", "model": "fake"})
 
-    runtime, _db = _build_demo_runtime(module, _Engine())
+    engine = _Engine()
+    runtime, _db = _build_demo_runtime(module, engine)
     clinic = {"name": "Nova", "sector": "otro", "services": ["Botox"]}
 
     result = asyncio.run(
@@ -384,5 +421,107 @@ def test_demo_owner_onboarding_repairs_thin_capability_answer() -> None:
     )
 
     joined = " ".join(result).lower()
+    assert engine.calls >= 2
     assert any(token in joined for token in ("clientes", "citas", "respondo", "orient"))
     assert "dime cómo se llama tu negocio" not in joined
+
+
+def test_demo_owner_onboarding_static_fallback_only_when_model_returns_nothing() -> None:
+    module = load_melissa_module()
+
+    class _Engine:
+        async def complete(self, msgs, **kwargs):
+            return ("", {"provider": "fake", "model": "fake"})
+
+    runtime, _db = _build_demo_runtime(module, _Engine())
+    clinic = {"name": "Nova", "sector": "otro", "services": ["Botox"]}
+
+    result = asyncio.run(
+        runtime._handle_demo_message("owner_cap_none_1", "me mandaron tu numero y no entiendo que haces", clinic)
+    )
+
+    joined = " ".join(result).lower()
+    assert "respondo clientes" in joined
+    assert "pásame el nombre de tu negocio" in " ".join(result).lower()
+
+
+def test_demo_simulation_mode_bypasses_core_for_same_chat_customer_turns() -> None:
+    module = load_melissa_module()
+
+    class _Engine:
+        async def complete(self, msgs, **kwargs):
+            user = msgs[-1]["content"]
+            system = msgs[0]["content"]
+            if user.startswith("negocio: "):
+                return (
+                    "ya tengo Clínica América ||| ya me ubiqué con cómo tendría que sonar esto ||| escríbeme como si fueras un cliente",
+                    {"provider": "fake", "model": "fake"},
+                )
+            if "ya pueden empezar la demo" in system:
+                return (
+                    "de una ||| escríbeme como si fueras un cliente real y yo ya caigo en el chat",
+                    {"provider": "fake", "model": "fake"},
+                )
+            if "Ya están en plena conversación con una persona interesada" in system:
+                return (
+                    "hola, bienvenida a Clínica América ||| qué te gustaría revisar",
+                    {"provider": "fake", "model": "fake"},
+                )
+            return ("ok ||| sigo", {"provider": "fake", "model": "fake"})
+
+    runtime, _db = _build_demo_runtime(module, _Engine())
+    runtime._try_conversation_core = lambda **kwargs: ["hola que necesitas"]
+    clinic = {"name": "Nova", "sector": "otro", "services": ["Botox"]}
+
+    asyncio.run(runtime._handle_demo_message("owner_sim_live_1", "mi negocio se llama Clinica America", clinic))
+    asyncio.run(runtime._handle_demo_message("owner_sim_live_1", "vale hagamos una demo entonces", clinic))
+    result = asyncio.run(runtime._handle_demo_message("owner_sim_live_1", "hola buenas tardes", clinic))
+
+    joined = " ".join(result).lower()
+    assert "hola que necesitas" not in joined
+    assert "qué te gustaría revisar" in " ".join(result).lower()
+
+
+def test_demo_simulation_last_resort_keeps_continuity_when_models_fully_fail() -> None:
+    module = load_melissa_module()
+
+    class _Engine:
+        def __init__(self) -> None:
+            self.fail_customer_turn = False
+
+        async def complete(self, msgs, **kwargs):
+            user = msgs[-1]["content"]
+            system = msgs[0]["content"]
+            if user.startswith("negocio: "):
+                return (
+                    "ya tengo Clínica América ||| ya me ubiqué con cómo tendría que sonar esto ||| escríbeme como si fueras un cliente",
+                    {"provider": "fake", "model": "fake"},
+                )
+            if "ya pueden empezar la demo" in system:
+                return (
+                    "de una ||| escríbeme como si fueras un cliente real y yo ya caigo en el chat",
+                    {"provider": "fake", "model": "fake"},
+                )
+            if "Ya están en plena conversación con una persona interesada" in system:
+                if self.fail_customer_turn:
+                    raise RuntimeError("all providers failed")
+                return (
+                    "botox acá lo trabajan muy natural ||| qué zona te gustaría revisar",
+                    {"provider": "fake", "model": "fake"},
+                )
+            return ("ok ||| sigo", {"provider": "fake", "model": "fake"})
+
+    engine = _Engine()
+    runtime, _db = _build_demo_runtime(module, engine)
+    clinic = {"name": "Nova", "sector": "otro", "services": ["Botox"]}
+
+    asyncio.run(runtime._handle_demo_message("owner_sim_fail_1", "mi negocio se llama Clinica America", clinic))
+    asyncio.run(runtime._handle_demo_message("owner_sim_fail_1", "vale hagamos una demo entonces", clinic))
+    asyncio.run(runtime._handle_demo_message("owner_sim_fail_1", "me interesa botox pero me da miedo quedar exagerada", clinic))
+    engine.fail_customer_turn = True
+    result = asyncio.run(runtime._handle_demo_message("owner_sim_fail_1", "si quiero cita como seguimos?", clinic))
+
+    joined = " ".join(result).lower()
+    assert "hola, soy melissa" not in joined
+    assert "cuéntame un poco más y te voy guiando" not in joined
+    assert any(token in joined for token in ("agendar", "horario", "siguiente paso", "nombre"))
