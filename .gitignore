@@ -1,39 +1,103 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# melissa — .gitignore
+# Repositorio público: github.com/sxrubyo/melissa
+#
+# REGLA: todo lo que sea datos de clientes, credenciales o sesiones
+#        de WhatsApp va aquí. El repo solo sube el engine.
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── Variables de entorno (credenciales) ────────────────────────────────────
 .env
 .env.*
-!.env.example
-.envrc
+!.env.example          # El ejemplo SÍ se sube
 
-.venv/
-venv/
-env/
-.nova/
+# ── Instancias de clientes (datos privados) ─────────────────────────────────
+melissa-instances/
+~/melissa-instances/
+
+# ── Bases de datos de producción ────────────────────────────────────────────
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# ── Sesiones de WhatsApp (Baileys / WA-JS) ──────────────────────────────────
+auth_info_multi/
+auth_info_multi.txt
+auth_info/
+session/
+sessions/
+.wwebjs_auth/
+.wwebjs_cache/
+*.session
+wa_*.json
+
+# ── Personas / identidad del cliente ────────────────────────────────────────
+# Cada instancia tiene sus propios prompts — no van al repo público.
+# El directorio personas/ del template puede subirse si no tiene datos reales.
+personas/*/
+# Excepción: sube la estructura de ejemplo (sin contenido real)
+!personas/.gitkeep
+!personas/example/
+
+# ── Logs ────────────────────────────────────────────────────────────────────
+logs/
+*.log
+npm-debug.log*
+
+# ── Backups ─────────────────────────────────────────────────────────────────
+backups/
+*.bak.*
+*.bak
+
+# ── Python ──────────────────────────────────────────────────────────────────
 __pycache__/
-**/__pycache__/
 *.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 
-logs/
-*.log
+# ── Virtual environments ─────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+.env.local
 
-*.db
-*.sqlite
-*.sqlite3
-
-*.bak
-*.bak.*
-*.bak_*
-*.patch
-*.pre_merge_*
-
-output/
-screenshots/
-backups/
-tmp/
-
+# ── Node (si usas Baileys / WA-JS) ──────────────────────────────────────────
 node_modules/
-.npm/
+package-lock.json   # Opcional: comenta esta línea si quieres bloquear versiones
 
+# ── Datos generados en runtime ──────────────────────────────────────────────
+vectors.db
+data.db
+melissa_ultra.db
+instance.json
+
+# ── OS / IDE ────────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ── Archivos de clave / certificados ────────────────────────────────────────
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+
+# Backups con guion bajo y sufijos libres
+*.bak_*
+*.pre_merge*
+*.patch
+.nova/

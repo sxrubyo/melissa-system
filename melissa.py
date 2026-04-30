@@ -8776,9 +8776,9 @@ class ResponseGenerator:
         normalized = _normalize_conv_text(user_msg or "")
 
         intro_variants = [
-            f"Soy {agent_name}, la asesora virtual{f' de {clinic_name}' if clinic_name else ''}. También soy la IA que acompaña este chat para orientarte bien",
-            f"Soy {agent_name}, la asesora virtual{f' de {clinic_name}' if clinic_name else ''}. Soy una IA pensada para responderte claro y ayudarte a avanzar",
-            f"Soy {agent_name}, la asesora virtual{f' de {clinic_name}' if clinic_name else ''}. Soy una IA pensada para que esto se sienta natural y bien llevado",
+            f"Soy {agent_name}{f', la asesora de {clinic_name}' if clinic_name else ', la asesora'}. Estoy acá para orientarte y ayudarte con lo que necesites",
+            f"Hola, soy {agent_name}{f', del equipo de {clinic_name}' if clinic_name else ''}. Cuéntame en qué te ayudo",
+            f"Soy {agent_name}{f', la asesora de {clinic_name}' if clinic_name else ''}. Cualquier duda o info que necesites, aquí estoy",
         ]
         intro = intro_variants[len(normalized) % len(intro_variants)]
 
@@ -12891,18 +12891,19 @@ class MelissaUltra:
             admin_ids = _parse_admin_ids(clinic.get("admin_chat_ids", []))
             is_admin = chat_id in admin_ids or db.get_admin(chat_id) is not None
 
+            # 2. Auth check primero — incluso si la instancia está en demo
+            # para no bloquear login/activación/admin recovery.
+            if auth_engine and auth_engine.is_auth_message(chat_id, text):
+                result = await auth_engine.process(chat_id, text)
+                if result:
+                    return result
+
             # ── MODO DEMO ────────────────────────────────────────────────────
             # Cuando DEMO_MODE está activo, cualquier no-admin entra al flujo
             # demo aunque la instancia ya esté configurada.
             if Config.DEMO_MODE and not is_admin:
                 return await self._handle_demo_message(chat_id, text, clinic)
             # ─────────────────────────────────────────────────────────────────
-
-            # 2. Auth check primero — antes de tocar historial de pacientes
-            if auth_engine and auth_engine.is_auth_message(chat_id, text):
-                result = await auth_engine.process(chat_id, text)
-                if result:
-                    return result
 
             if attachments and is_admin:
                 asset_reply = await self._admin_ingest_assets(chat_id, text, attachments, clinic)
@@ -13745,7 +13746,6 @@ class MelissaUltra:
                     recent_limit,
                 ),
             ]
-            last_nonempty = None
             had_output = False
             for prompt_now, temp_now, max_now, tier_now, limit_now in attempts:
                 candidate = await _llm_conv(
@@ -13757,10 +13757,9 @@ class MelissaUltra:
                 )
                 if candidate and candidate.strip():
                     had_output = True
-                    last_nonempty = candidate
                     if not validator(candidate):
                         return candidate, True
-            return last_nonempty, had_output
+            return None, had_output
 
         def _save(role, msg):
             if db:
@@ -13904,6 +13903,25 @@ class MelissaUltra:
                 "quiero ver como interactuan",
                 "quiero ver cómo interactúan",
                 "pueden comenzar a escribir su consulta",
+                # ── Frases que rompen el personaje (v10 fix) ──────────────────
+                "no se cual es el negocio",
+                "no sé cuál es el negocio",
+                "hay confusion",
+                "hay confusión",
+                "me doy cuenta de que",
+                "mi funcion es",
+                "mi función es",
+                "aqui lo que hago es",
+                "aquí lo que hago es",
+                "soy una persona que responde",
+                "soy una ia",
+                "soy un bot",
+                "soy chatgpt",
+                "soy un asistente virtual",
+                "soy una asistente virtual",
+                "como asistente",
+                "como ia",
+                "como bot",
             )
             if any(token in lowered for token in banned):
                 return True
@@ -14079,7 +14097,6 @@ class MelissaUltra:
                     "reasoning",
                 ),
             ]
-            last_nonempty = None
             had_output = False
             for prompt_now, temp_now, max_now, tier_now in attempts:
                 candidate = await _llm(
@@ -14091,10 +14108,9 @@ class MelissaUltra:
                 )
                 if candidate and candidate.strip():
                     had_output = True
-                    last_nonempty = candidate
                     if not validator(candidate):
                         return candidate, True
-            return last_nonempty, had_output
+            return None, had_output
 
         def _demo_owner_last_resort(
             user_text: str,
@@ -14176,19 +14192,27 @@ class MelissaUltra:
                 system_prompt = ""
 
             if not system_prompt:
-                system_prompt = """Eres Melissa, una asesora virtual muy humana en demo privada para dueños de negocio.
-Responde con criterio, cercanía y seguridad. No suenes a bot, consultora ni software.
-Responde primero la pregunta actual y solo después, si hace falta, pide el nombre del negocio.
-Usa 2 o 3 burbujas separadas por |||. Cada burbuja debe cerrar una idea completa."""
+                system_prompt = """Eres Melissa. Llevas el WhatsApp de negocios — respondes clientes, filtras interesados, orientas, ayudas con citas.
+Estás en una demo privada con el dueño del negocio. Habla como tú misma, con criterio, cercanía y seguridad.
+No suenes a bot, consultora ni software. No recites tus capacidades como lista.
+Si el dueño todavía no te dijo el nombre del negocio, responde su pregunta primero y al final, de forma natural, pregunta el nombre.
+Usa 2 o 3 burbujas separadas por |||. Cada burbuja cierra una idea completa. Nunca dejes frases cortadas."""
 
             system_prompt += """
+
+IDENTIDAD — NUNCA SALGAS DE ESTE PERSONAJE:
+- Tu nombre es Melissa. Eso es todo lo que necesitas saber sobre ti misma.
+- Nunca digas frases como "hay confusión", "no sé cuál es el negocio", "mi función es", "aquí lo que hago es", "me doy cuenta de que".
+- Nunca expongas tu estado interno ni tus limitaciones de contexto.
+- Si alguien dice "me mandaron tu número" o "qué haces", responde natural: eres Melissa, llevas chats de negocios, respondes clientes.
+- Si alguien dice "no entiendo", simplificas y sigues — nunca te enredas más.
+- Cuando no tienes contexto de negocio todavía, igual respondes con seguridad y pides el nombre al final, una sola vez, de forma simple.
 
 REGLAS EXTRA DE ESTA DEMO:
 - si preguntan quién te hizo, quién te creó o cómo tener esto: responde que te hizo BlackBoss. Contacto: 3124348669. Persona: Santiago Rubio
 - si preguntan si aceptas audios, notas de voz, imágenes, PDFs o documentos: responde que sí, cuando el canal lo soporte, puedes transcribir, leer y usar ese contenido
 - si te hacen una pregunta general fuera de contexto, respóndela bien primero y luego vuelve suave a la demo si hace sentido
 - si sospechan estafa o no quieren dar el nombre del negocio, baja la guardia y explica para qué lo pides sin sonar defensiva
-- si dicen que les mandaron tu número o preguntan qué haces exactamente, explica concreto que respondes clientes, filtras interesados, orientas, ayudas con citas, reportas y aceptas feedback
 - nunca menciones Nova, Clínica de las Américas ni branding heredado
 - no dejes frases colgadas ni respuestas cortadas
 """
@@ -14215,11 +14239,11 @@ REGLAS EXTRA DE ESTA DEMO:
 - si vas a pedir el nombre del negocio, hazlo solo después de responder
 - evita respuestas de una sola palabra o de una sola línea vacía
 - no dejes una burbuja sola como "puedes", "claro" o "sí"
-- si preguntan qué haces, menciona varias capacidades reales y luego pide el nombre del negocio sin vender humo
-- si preguntan para qué querías el nombre, explica que era para sonar como el chat real del negocio y hacer la demo bien ubicada
+                - si preguntan qué haces, menciona varias capacidades reales y luego pide el nombre del negocio sin vender humo
+                - si preguntan para qué querías el nombre, explica que era para sonar como el chat real del negocio y hacer la demo bien ubicada
 """,
             )
-            if not response and not had_model_output:
+            if not response:
                 response = _demo_owner_last_resort(
                     text,
                     explain_name=explain_name,
@@ -14599,7 +14623,7 @@ Máximo 1 oración por burbuja. Natural y seguro."""
                 temp=0.72,
                 max_t=220,
             )
-            if not r and not bind_had_output:
+            if not r:
                 if found:
                     r = f"ya tengo {nombre} ||| ya me ubiqué con cómo tendría que sonar esto ||| escríbeme como si fueras un cliente a ver qué pasa"
                 else:
@@ -14815,7 +14839,7 @@ Sin punto final."""
                 temp=0.66,
                 max_t=120,
             )
-            if not sim_reply and not sim_had_output:
+            if not sim_reply:
                 sim_reply = "de una ||| escríbeme como si fueras un cliente real y yo ya caigo en el chat"
             return _send(sim_reply)
 
@@ -14908,7 +14932,7 @@ SI QUIEREN AGENDAR
                 )
             finally:
                 history = original_history
-            if not customer_reply and not customer_had_output:
+            if not customer_reply:
                 customer_reply = _demo_customer_last_resort(text)
             return _send(customer_reply)
 
@@ -15480,7 +15504,7 @@ OBJECIONES
             model_tier="fast",
             recent_limit=8,
         )
-        if not r and not had_model_output:
+        if not r:
             r = _demo_customer_last_resort(text)
         # Solo revelar truco si la respuesta tiene contenido real (>60 chars)
         # y no termina en pregunta (no interrumpir el flujo de la conversación)
@@ -19814,6 +19838,20 @@ No hables como dashboard, soporte técnico ni consola."""
         """
         import base64
         audio_bytes, mime_type = None, "audio/ogg"
+        def _audio_suffix(mime: str) -> str:
+            mapping = {
+                "audio/ogg": ".ogg",
+                "audio/oga": ".ogg",
+                "audio/opus": ".ogg",
+                "audio/mp3": ".mp3",
+                "audio/mpeg": ".mp3",
+                "audio/wav": ".wav",
+                "audio/x-wav": ".wav",
+                "audio/mp4": ".m4a",
+                "audio/x-m4a": ".m4a",
+                "audio/webm": ".webm",
+            }
+            return mapping.get((mime or "").lower(), ".ogg")
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 if platform == "telegram":
@@ -19849,7 +19887,17 @@ No hables como dashboard, soporte técnico ni consola."""
             # ── Gemini 2.0 Flash — comprensión nativa de audio ────────────────
             # Rota entre las 3 keys disponibles
             effective_mime = "audio/ogg" if mime_type in ("audio/oga","audio/opus") else mime_type
-            for gkey in [k for k in [Config.GEMINI_API_KEY, Config.GEMINI_API_KEY_2, Config.GEMINI_API_KEY_3] if k]:
+            gemini_keys = [
+                k for k in [
+                    Config.GEMINI_API_KEY,
+                    Config.GEMINI_API_KEY_2,
+                    Config.GEMINI_API_KEY_3,
+                    Config.GEMINI_API_KEY_4,
+                    Config.GEMINI_API_KEY_5,
+                    Config.GEMINI_API_KEY_6,
+                ] if k
+            ]
+            for gkey in gemini_keys:
                 try:
                     b64 = base64.b64encode(audio_bytes).decode()
                     payload = {
@@ -19869,19 +19917,62 @@ No hables como dashboard, soporte técnico ni consola."""
                         if t and len(t) > 2:
                             log.info(f"[audio] Gemini OK: {t[:80]}")
                             return t
-                    elif resp.status_code == 429:
+                    elif resp.status_code in (408, 429, 500, 502, 503, 504):
                         continue  # rotar key
                     else:
                         log.warning(f"[audio] Gemini {resp.status_code}: {resp.text[:120]}")
-                        break
+                        continue
                 except Exception as eg:
                     log.warning(f"[audio] Gemini error: {eg}")
                     continue
 
-            # ── Fallback: OpenRouter Whisper ──────────────────────────────────
-            if Config.OPENROUTER_API_KEY:
+            # ── Fallback 1: Groq Whisper (soporta OGG/WEBM de forma nativa) ───
+            if Config.GROQ_API_KEY:
+                tmp_path = None
                 try:
-                    suffix = ".ogg"
+                    suffix = _audio_suffix(effective_mime)
+                    filename = f"audio{suffix}"
+                    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                        tmp.write(audio_bytes)
+                        tmp_path = tmp.name
+                    async with httpx.AsyncClient(timeout=60.0) as client:
+                        with open(tmp_path, "rb") as f:
+                            resp = await client.post(
+                                "https://api.groq.com/openai/v1/audio/transcriptions",
+                                headers={"Authorization": f"Bearer {Config.GROQ_API_KEY}"},
+                                files={"file": (filename, f, effective_mime)},
+                                data={
+                                    "model": "whisper-large-v3-turbo",
+                                    "language": "es",
+                                    "response_format": "json",
+                                    "temperature": "0",
+                                    "prompt": "Transcribe este audio en español tal como se dice, sin comentarios adicionales.",
+                                },
+                            )
+                    if tmp_path and os.path.exists(tmp_path):
+                        os.unlink(tmp_path)
+                    if resp.status_code == 200:
+                        payload = resp.json()
+                        t = (payload.get("text") or "").strip()
+                        if t:
+                            log.info(f"[audio] Groq Whisper OK: {t[:80]}")
+                            return t
+                    else:
+                        log.warning(f"[audio] Groq Whisper {resp.status_code}: {resp.text[:160]}")
+                except Exception as eg:
+                    log.warning(f"[audio] Groq Whisper error: {eg}")
+                    if tmp_path and os.path.exists(tmp_path):
+                        try:
+                            os.unlink(tmp_path)
+                        except Exception:
+                            pass
+
+            # ── Fallback 2: OpenRouter Whisper ───────────────────────────────
+            if Config.OPENROUTER_API_KEY:
+                tmp_path = None
+                try:
+                    suffix = _audio_suffix(effective_mime)
+                    filename = f"audio{suffix}"
                     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
                         tmp.write(audio_bytes); tmp_path = tmp.name
                     async with httpx.AsyncClient(timeout=60.0) as client:
@@ -19889,16 +19980,27 @@ No hables como dashboard, soporte técnico ni consola."""
                             resp = await client.post(
                                 "https://openrouter.ai/api/v1/audio/transcriptions",
                                 headers={"Authorization": f"Bearer {Config.OPENROUTER_API_KEY}"},
-                                files={"file": ("audio.ogg", f, mime_type)},
-                                data={"model": getattr(Config,"WHISPER_MODEL","openai/whisper-large-v3")})
-                    os.unlink(tmp_path)
+                                files={"file": (filename, f, effective_mime)},
+                                data={
+                                    "model": getattr(Config,"WHISPER_MODEL","openai/whisper-large-v3"),
+                                    "language": "es",
+                                })
+                    if tmp_path and os.path.exists(tmp_path):
+                        os.unlink(tmp_path)
                     if resp.status_code == 200:
                         t = resp.json().get("text","").strip()
                         if t:
                             log.info(f"[audio] Whisper OK: {t[:80]}")
                             return t
+                    else:
+                        log.warning(f"[audio] OpenRouter Whisper {resp.status_code}: {resp.text[:160]}")
                 except Exception as ew:
                     log.warning(f"[audio] Whisper error: {ew}")
+                    if tmp_path and os.path.exists(tmp_path):
+                        try:
+                            os.unlink(tmp_path)
+                        except Exception:
+                            pass
 
             return "[no se pudo transcribir el audio]"
         except Exception as e:

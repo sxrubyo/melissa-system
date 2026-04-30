@@ -108,6 +108,46 @@ def test_process_message_first_turn_short_greeting_uses_llm() -> None:
     assert bubbles == ["hola, aquí estoy. dime qué necesitas"]
 
 
+def test_process_message_demo_mode_still_allows_auth_flow() -> None:
+    module = load_melissa_module()
+    module.Config.DEMO_MODE = True
+    melissa = module.MelissaUltra.__new__(module.MelissaUltra)
+    melissa._pending_buffers = {}
+    melissa._admin_pending = {}
+    melissa._last_reviewed_chat = None
+    melissa._availability_pending_patient = None
+    melissa._demo_sessions = {}
+    melissa._emoji_chats = set()
+    melissa._chat_routes = {}
+    melissa._orchestrator = None
+    melissa._remember_route = lambda chat_id, route=None: None
+    melissa._resolve_route = lambda chat_id, route=None: {"platform": "whatsapp"}
+    melissa._handle_demo_message = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("demo no debería interceptar auth"))
+
+    class FakeAuth:
+        def is_auth_message(self, chat_id, text):
+            return text == "/login"
+
+        async def process(self, chat_id, text):
+            return ["flujo auth"]
+
+    module.auth_engine = FakeAuth()
+    module.db = types.SimpleNamespace(
+        get_clinic=lambda: {
+            "name": "Melissa Demo",
+            "sector": "estetica",
+            "setup_done": 1,
+            "admin_chat_ids": [],
+            "pricing": {},
+            "services": ["Botox"],
+        },
+        get_admin=lambda chat_id: None,
+    )
+
+    bubbles = asyncio.run(melissa.process_message("7000001099", "/login"))
+    assert bubbles == ["flujo auth"]
+
+
 def test_normalize_first_patient_turn_keeps_meaningful_llm_greeting() -> None:
     module = load_melissa_module()
     generator = module.ResponseGenerator.__new__(module.ResponseGenerator)

@@ -226,6 +226,7 @@ def _is_confused(normalized: str) -> bool:
         "a que te refieres",
         "que quieres decir",
         "no te entiendo",
+        "no entiendo",
         "explícamelo",
         "explicamelo",
         "para que",
@@ -245,8 +246,21 @@ def _is_confused(normalized: str) -> bool:
         "qué sigue",
         "como arrancamos",
         "cómo arrancamos",
+        "no te sigo",
+        "no sigo",
+        "perdona",
+        "perdón",
+        "puedes explicar",
+        "explicame",
+        "explícame",
     )
-    return any(marker in normalized for marker in markers)
+    if any(marker in normalized for marker in markers):
+        return True
+    # Mensajes ultra-cortos que son solo confusión: "que?", "qué?", "?", "???", "ok y?"
+    stripped = normalized.strip("? !")
+    if stripped in {"que", "qué", "ok", "ok y", "y", "y eso", "eso", "como"}:
+        return True
+    return False
 
 
 def _is_identity_or_meta_probe(normalized: str) -> bool:
@@ -275,6 +289,16 @@ def _is_identity_or_meta_probe(normalized: str) -> bool:
         "para qué necesitas",
         "en que quedamos",
         "en qué quedamos",
+        "me mandaron tu numero",
+        "me mandaron tu número",
+        "me pasaron tu numero",
+        "me pasaron tu número",
+        "que haces exactamente",
+        "qué haces exactamente",
+        "no entiendo que haces",
+        "no entiendo qué haces",
+        "no entiendo para que",
+        "no entiendo para qué",
     )
     return any(marker in normalized for marker in markers)
 
@@ -328,6 +352,7 @@ def _domino_stage(
     business_name: str,
     explain_name: bool,
     force_stage: Optional[str] = None,
+    history: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, str]:
     if force_stage == "reset-demo":
         return {
@@ -342,7 +367,11 @@ def _domino_stage(
             "action": "reacciona como alguien que acaba de ubicarse en el negocio, usa el contexto encontrado solo si es fiable y empuja a una prueba real de cliente",
         }
     if not business_name:
-        if explain_name or _is_confused(normalized):
+        # Escalar a clarify-demo si: confusión explícita, explain_name,
+        # o ya hay 2+ turnos sin que el dueño haya dado el nombre
+        prior_turns = len([m for m in (history or []) if m.get("role") == "assistant"])
+        is_multi_turn_stuck = prior_turns >= 2
+        if explain_name or _is_confused(normalized) or is_multi_turn_stuck:
             return {
                 "stage": "clarify-demo",
                 "objective": "explicar para qué necesitas el nombre del negocio y conseguirlo sin sonar a formulario",
@@ -394,6 +423,7 @@ def build_demo_domino_payload(
         business_name=business_name,
         explain_name=explain_name,
         force_stage=force_stage,
+        history=list(history or []),
     )
     sources = load_domino_sources()
     history_block = _history_block(list(history or []))
@@ -416,7 +446,11 @@ def build_demo_domino_payload(
     identity = (
         f"Eres Melissa dentro del WhatsApp de {business_name} para esta demo."
         if business_name
-        else "Eres Melissa en demo privada. Todavía no puedes asumir un negocio concreto."
+        else (
+            "Eres Melissa. Llevas chats de negocios en WhatsApp — respondes clientes, filtras interesados, "
+            "orientas y ayudas con citas. Eso es lo que eres y lo que haces. "
+            "Aún no sabes el nombre del negocio con el que estás hablando — eso es todo lo que falta."
+        )
     )
 
     memory = business_memory
@@ -517,8 +551,12 @@ REGLAS DE SALIDA
 - una idea accionable por burbuja
 - cada burbuja debe ser una idea completa; no dejes frases truncas ni subordinadas abiertas
 - tono humano, directo, ubicado, colombiano neutro, sin emojis
+- NUNCA digas "hay confusión", "hay confusion", "no sé cuál es el negocio", "no se cual es el negocio"
+- NUNCA digas "mi función es", "aquí lo que hago es", "me doy cuenta de que", "hola. aquí lo que hago es"
+- NUNCA expongas tu estado interno ni tus limitaciones de contexto; si algo no sabes, simplemente pregunta lo que necesitas
 
 EJEMPLOS DE DECISIÓN
+- si dicen "me mandaron tu número" o "no entiendo qué haces": responde directo quién eres (Melissa, llevas el chat del negocio) y qué haces (respondes clientes, filtras, orientas, ayudas con citas); después pides el nombre del negocio de forma natural, sin formalidad
 - si dicen "me mandaron tu número y no entiendo qué haces", explicas claro que respondes clientes, filtras interesados, orientas y ayudas con citas; después pides el nombre del negocio
 - si dicen "para qué quieres el nombre de mi negocio", explicas que lo necesitas para sonar como el chat real de ese negocio, no para llenar formularios
 - si ya te dijeron el negocio y luego preguntan "para qué querías el nombre", respondes eso sin tratar la pregunta como si fuera un nombre nuevo

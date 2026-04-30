@@ -306,6 +306,23 @@ _TEMPLATE_TELLS = [
     "1. ",
     "2. ",
     "3. ",
+    # ── Frases de identidad rota — v10.1 fix ─────────────────────────────
+    "hay confusión",
+    "hay confusion",
+    "no sé cuál es el negocio",
+    "no se cual es el negocio",
+    "mi función es",
+    "mi funcion es",
+    "aquí lo que hago es",
+    "aqui lo que hago es",
+    "me doy cuenta de que",
+    "soy una ia",
+    "soy un bot",
+    "soy una asistente virtual",
+    "soy un asistente virtual",
+    "como asistente de ia",
+    "hola. aquí lo que hago",
+    "hola. aqui lo que hago",
 ]
 
 _LLM_STRUCTURAL_TELLS = {

@@ -445,6 +445,78 @@ def test_demo_owner_onboarding_static_fallback_only_when_model_returns_nothing()
     assert "pásame el nombre de tu negocio" in " ".join(result).lower()
 
 
+def test_demo_owner_onboarding_invalid_model_outputs_fall_back_to_owner_last_resort() -> None:
+    module = load_melissa_module()
+
+    class _Engine:
+        async def complete(self, msgs, **kwargs):
+            return ("Lo que hago es básicamente atender", {"provider": "fake", "model": "fake"})
+
+    runtime, _db = _build_demo_runtime(module, _Engine())
+    clinic = {"name": "Nova", "sector": "otro", "services": ["Botox"]}
+
+    result = asyncio.run(
+        runtime._handle_demo_message("owner_cap_invalid_1", "me mandaron tu numero y no entiendo que haces", clinic)
+    )
+
+    joined = " ".join(result).lower()
+    assert "básicamente atender" not in " ".join(result).lower()
+    assert any(token in joined for token in ("clientes", "citas", "negocio"))
+
+
+def test_transcribe_audio_uses_groq_when_gemini_is_exhausted() -> None:
+    module = load_melissa_module()
+    module.Config.TELEGRAM_TOKEN = "tg-test"
+    module.Config.GEMINI_API_KEY = "k1"
+    module.Config.GEMINI_API_KEY_2 = "k2"
+    module.Config.GEMINI_API_KEY_3 = "k3"
+    module.Config.GEMINI_API_KEY_4 = "k4"
+    module.Config.GEMINI_API_KEY_5 = "k5"
+    module.Config.GEMINI_API_KEY_6 = "k6"
+    module.Config.GROQ_API_KEY = "groq-test"
+    module.Config.OPENROUTER_API_KEY = ""
+
+    class _Resp:
+        def __init__(self, status_code=200, json_data=None, text="", content=b""):
+            self.status_code = status_code
+            self._json = json_data or {}
+            self.text = text
+            self.content = content
+
+        def json(self):
+            return self._json
+
+    class _FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url, params=None, headers=None):
+            if "getFile" in url:
+                return _Resp(json_data={"result": {"file_path": "voice/file_1.oga"}})
+            if "/file/bot" in url:
+                return _Resp(content=b"fake-audio")
+            raise AssertionError(f"GET inesperado: {url}")
+
+        async def post(self, url, json=None, files=None, data=None, headers=None):
+            if "generativelanguage.googleapis.com" in url:
+                return _Resp(status_code=429, text="rate limited")
+            if "api.groq.com/openai/v1/audio/transcriptions" in url:
+                return _Resp(status_code=200, json_data={"text": "hola, quiero información de botox"})
+            raise AssertionError(f"POST inesperado: {url}")
+
+    module.httpx.AsyncClient = _FakeAsyncClient
+    runtime = module.MelissaUltra.__new__(module.MelissaUltra)
+
+    text = asyncio.run(runtime.transcribe_audio("voice-1", platform="telegram"))
+    assert "quiero información de botox" in text
+
+
 def test_demo_simulation_mode_bypasses_core_for_same_chat_customer_turns() -> None:
     module = load_melissa_module()
 

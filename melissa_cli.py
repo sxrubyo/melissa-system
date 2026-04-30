@@ -155,7 +155,7 @@ except ImportError:
 VERSION = "8.0.2"
 MELISSA_HOME = os.getenv("MELISSA_HOME", str(Path.home() / ".melissa"))
 MELISSA_DIR = os.getenv("MELISSA_DIR", str(Path(__file__).resolve().parent))
-INSTANCES_DIR = os.getenv("INSTANCES_DIR", str(Path(MELISSA_HOME) / "instances"))
+INSTANCES_DIR = os.getenv("INSTANCES_DIR", str(Path.home() / "melissa-instances"))
 NOVA_DIR = os.getenv("NOVA_DIR", "/home/ubuntu/nova-os")
 BACKUP_DIR = Path(os.getenv("MELISSA_BACKUPS", Path.home() / "melissa-backups"))
 CACHE_DIR = Path(MELISSA_HOME) / "cache"
@@ -189,14 +189,35 @@ SYNC_RUNTIME_FILES = [
     ".env.example",
 ]
 
+# ── Directorios que se sincronizan a todas las instancias ──────────────────
 SYNC_RUNTIME_DIRS = [
     "v7",
     "melissa_core",
     "melissa_agents",
     "melissa_skills",
     "melissa_integrations",
-    "personas",
+    # "personas" INTENCIONALMENTE EXCLUIDO:
+    # cada instancia tiene su propia identidad, prompts y tono.
+    # Usa 'melissa config <nombre>' para editar la persona de un cliente.
 ]
+
+# ── Paths que NUNCA se tocan durante sync ──────────────────────────────────
+INSTANCE_PROTECTED_PATHS = {
+    ".env",
+    "melissa.db", "melissa.db-shm", "melissa.db-wal",
+    "melissa_ultra.db", "vectors.db", "data.db",
+    "logs",
+    "identity",       # Nombre, voz, tono del agente
+    "soul",           # Valores y ética del agente
+    "personas",       # Prompts de sistema del cliente
+    "knowledge_base", # Base de conocimiento del cliente
+    "instance.json",
+    "auth_info_multi.txt",
+    "__pycache__",
+    "backups",
+    ".venv",
+}
+
 
 
 def _runtime_sync_entries(source_root: str) -> List[str]:
@@ -217,19 +238,47 @@ def _remove_runtime_target(path: Path) -> None:
         path.unlink()
 
 
+def _sync_dir_smart(src: Path, dst: Path) -> None:
+    """
+    Sync de directorio que ACTUALIZA archivos sin borrar extras.
+    A diferencia de copytree(dirs_exist_ok=False), no elimina archivos
+    que solo existen en el destino (configuraciones del cliente).
+    """
+    dst.mkdir(parents=True, exist_ok=True)
+    for item in src.rglob("*"):
+        rel = item.relative_to(src)
+        target = dst / rel
+        # Nunca pisar rutas protegidas dentro de subdirectorios
+        top = rel.parts[0] if rel.parts else ""
+        if top in INSTANCE_PROTECTED_PATHS:
+            continue
+        try:
+            if item.is_dir():
+                target.mkdir(parents=True, exist_ok=True)
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(item, target)
+        except Exception:
+            pass  # permisos u otros errores no detienen el sync
+
+
 def _clone_runtime_entries(source_root: str, dest_root: str, entries: Optional[List[str]] = None) -> List[str]:
     src_root = Path(source_root)
     dst_root = Path(dest_root)
     copied: List[str] = []
     for rel_path in entries or _runtime_sync_entries(source_root):
+        # Saltar rutas protegidas de la instancia
+        top_level = Path(rel_path).parts[0] if Path(rel_path).parts else rel_path
+        if top_level in INSTANCE_PROTECTED_PATHS:
+            continue
         src = src_root / rel_path
         dst = dst_root / rel_path
         if not src.exists():
             continue
         dst.parent.mkdir(parents=True, exist_ok=True)
         if src.is_dir():
-            _remove_runtime_target(dst)
-            shutil.copytree(src, dst)
+            # Sync inteligente: actualiza sin borrar archivos del cliente
+            _sync_dir_smart(src, dst)
         else:
             if dst.exists() or dst.is_symlink():
                 _remove_runtime_target(dst)
@@ -10934,6 +10983,19 @@ def main():
         args.name = args.subcommand
     
     if cmd == "" and not args.help:
+        # ── Intentar lanzar TUI interactivo ──────────────────────────────
+        _tui_path = Path(__file__).resolve().parent / "melissa_tui.py"
+        if sys.stdout.isatty() and _tui_path.exists():
+            try:
+                import importlib.util as _ilu
+                _spec = _ilu.spec_from_file_location("melissa_tui", str(_tui_path))
+                _mod  = _ilu.module_from_spec(_spec)
+                _spec.loader.exec_module(_mod)
+                _mod.run_tui()
+                return
+            except Exception:
+                pass  # Fallback a help normal
+
         ensure_workspace_files()
         if not workspace_is_configured() or not get_instances():
             cmd_init(args)
