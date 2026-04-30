@@ -258,6 +258,53 @@ def test_normalize_first_contact_response_rewrites_bad_greeting_followup() -> No
     assert "qué te gustaría revisar" in lowered or "que te gustaria revisar" in lowered
 
 
+def test_looks_fragmented_reply_detects_dangling_prepositions() -> None:
+    module = load_melissa_module()
+
+    assert module.looks_fragmented_reply("Soy Melissa, asesora de")
+    assert module.looks_fragmented_reply("No tengo esa información de los")
+    assert not module.looks_fragmented_reply("Soy Melissa, asesora virtual de la clínica.")
+
+
+def test_admin_local_fallback_explains_creator_and_capabilities() -> None:
+    module = load_melissa_module()
+    module.db = types.SimpleNamespace(get_admin=lambda chat_id: {"name": "Santiago"})
+    runtime = module.MelissaUltra.__new__(module.MelissaUltra)
+
+    creator = runtime._admin_local_fallback(
+        "quien te hizo",
+        "quien te hizo",
+        {"services": ["Botox"]},
+        "Melissa",
+        "6908159885",
+    )
+    audio = runtime._admin_local_fallback(
+        "aceptas audios y pdf?",
+        "aceptas audios y pdf?",
+        {"services": ["Botox"]},
+        "Melissa",
+        "6908159885",
+    )
+
+    joined_creator = " ".join(creator).lower()
+    joined_audio = " ".join(audio).lower()
+    assert "blackboss" in joined_creator
+    assert "3124348669" in joined_creator
+    assert "audios" in joined_audio
+    assert "pdf" in joined_audio
+
+
+def test_is_synthetic_chat_id_filters_probe_like_demo_ids() -> None:
+    module = load_melissa_module()
+    runtime = module.MelissaUltra.__new__(module.MelissaUltra)
+
+    assert runtime._is_synthetic_chat_id("owner-demo-1")
+    assert runtime._is_synthetic_chat_id("wa_style_probe_live_40")
+    assert runtime._is_synthetic_chat_id("fresh_greeting_fix_5")
+    assert runtime._is_synthetic_chat_id("120363227381635534@newsletter")
+    assert not runtime._is_synthetic_chat_id("573001112233@s.whatsapp.net")
+
+
 def test_normalize_first_contact_response_drops_duplicate_intro_bubble() -> None:
     module = load_melissa_module()
 

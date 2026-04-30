@@ -26,9 +26,12 @@ def load_melissa_module():
 def test_demo_patient_like_messages_are_detected() -> None:
     runtime = MelissaUltra.__new__(MelissaUltra)
 
-    assert runtime._demo_should_use_patient_chat_path("hola")
-    assert runtime._demo_should_use_patient_chat_path("quien eres")
+    assert not runtime._demo_should_use_patient_chat_path("hola")
+    assert not runtime._demo_should_use_patient_chat_path("quien eres")
+    assert not runtime._demo_should_use_patient_chat_path("cuanto es 5 x 4")
+    assert not runtime._demo_should_use_patient_chat_path("cual es la capital de francia")
     assert runtime._demo_should_use_patient_chat_path("quiero una cita para botox")
+    assert runtime._demo_should_use_patient_chat_path("me interesa botox")
 
     assert not runtime._demo_should_use_patient_chat_path("quiero una demo")
     assert not runtime._demo_should_use_patient_chat_path("tengo un negocio")
@@ -72,7 +75,7 @@ def test_demo_patient_path_ignores_demo_history_when_no_business_loaded() -> Non
     assert history[0]["content"].startswith("Sigo siendo Melissa")
 
 
-def test_demo_patient_path_normalizes_low_quality_first_turn_without_business_name() -> None:
+def test_demo_owner_onboarding_replaces_low_quality_first_turn_without_business_name() -> None:
     module = load_melissa_module()
     module.Config.DEMO_MODE = True
     module.Config.DEMO_SECTOR = "estetica"
@@ -113,4 +116,5 @@ def test_demo_patient_path_normalizes_low_quality_first_turn_without_business_na
     joined = " ".join(result).lower()
     assert "hoy?" not in joined
     assert "melissa" in joined
-    assert "botox" in joined or "tratamientos" in joined
+    assert "nova" not in joined
+    assert "negocio" in joined
