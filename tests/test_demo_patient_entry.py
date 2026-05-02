@@ -665,3 +665,96 @@ def test_demo_customer_simulation_rejects_hoy_fragment_and_repairs_greeting() ->
     assert "hoy?" not in joined
     assert "melissa" in joined
     assert "revisar" in joined
+
+
+def test_demo_learn_mode_accepts_pdf_offer_without_claiming_it_already_understands() -> None:
+    module = load_melissa_module()
+
+    class _Engine:
+        async def complete(self, msgs, **kwargs):
+            user = msgs[-1]["content"]
+            if user.startswith("negocio: "):
+                return (
+                    "listo, ya me ubico con Clinica America ||| no encontré info pública confiable todavía ||| cuéntame a qué se dedica el negocio y qué ofrecen, y te muestro cómo respondería",
+                    {"provider": "fake", "model": "fake"},
+                )
+            return ("ok ||| sigo", {"provider": "fake", "model": "fake"})
+
+    runtime, _db = _build_demo_runtime(module, _Engine())
+    clinic = {"name": "Nova", "sector": "otro", "services": ["Botox"]}
+
+    asyncio.run(runtime._handle_demo_message("owner_pdf_1", "mi negocio se llama Clinica America", clinic))
+    result = asyncio.run(runtime._handle_demo_message("owner_pdf_1", "te puedo enviar un pdf, te sirve?", clinic))
+
+    joined = " ".join(result).lower()
+    assert "sí, me sirve" in joined or "si, me sirve" in joined
+    assert "envíamelo" in joined or "enviamelo" in joined
+    assert "ya entendí" not in joined
+
+
+def test_demo_doc_offer_after_found_business_stays_in_owner_mode() -> None:
+    module = load_melissa_module()
+
+    class _Engine:
+        async def complete(self, msgs, **kwargs):
+            user = msgs[-1]["content"]
+            if user.startswith("negocio: "):
+                return (
+                    "ya tengo Clínica América ||| ya me ubiqué con cómo tendría que sonar esto ||| escríbeme como si fueras un cliente",
+                    {"provider": "fake", "model": "fake"},
+                )
+            return ("ok ||| sigo", {"provider": "fake", "model": "fake"})
+
+    runtime, _db = _build_demo_runtime(module, _Engine())
+
+    async def _search_business_link(name):
+        return (
+            "Clínica América es una clínica estética con botox, rellenos y valoración médica",
+            "https://clinica-america.example",
+        )
+
+    runtime.search.search_business_link = _search_business_link
+    clinic = {"name": "Nova", "sector": "otro", "services": ["Botox"]}
+
+    asyncio.run(runtime._handle_demo_message("owner_pdf_found_1", "mi negocio se llama Clinica America", clinic))
+    result = asyncio.run(runtime._handle_demo_message("owner_pdf_found_1", "te puedo enviar un pdf, te sirve?", clinic))
+
+    joined = " ".join(result).lower()
+    assert "sí, me sirve" in joined or "si, me sirve" in joined
+    assert "envíamelo" in joined or "enviamelo" in joined
+    assert "cliente" not in joined
+
+
+def test_demo_business_switch_rebinds_without_manual_reset() -> None:
+    module = load_melissa_module()
+
+    class _Engine:
+        async def complete(self, msgs, **kwargs):
+            user = msgs[-1]["content"]
+            if user.startswith("negocio: "):
+                business = user.split("negocio: ", 1)[1].strip()
+                return (
+                    f"ya tengo {business} ||| ya me ubiqué con cómo tendría que sonar esto ||| escríbeme como si fueras un cliente",
+                    {"provider": "fake", "model": "fake"},
+                )
+            return ("ok ||| sigo", {"provider": "fake", "model": "fake"})
+
+    runtime, _db = _build_demo_runtime(module, _Engine())
+
+    async def _search_business_link(name):
+        lowered = name.lower()
+        if "manrique" in lowered:
+            return ("Clínica Estética Manrique", "https://manrique.example")
+        if "americas" in lowered:
+            return ("Clínica Las Américas Auna", "https://americas.example")
+        return ("", "")
+
+    runtime.search.search_business_link = _search_business_link
+    clinic = {"name": "Nova", "sector": "otro", "services": ["Botox"]}
+
+    asyncio.run(runtime._handle_demo_message("owner_switch_1", "clinica estetica manrique", clinic))
+    result = asyncio.run(runtime._handle_demo_message("owner_switch_1", "Clinica de las americas", clinic))
+
+    joined = " ".join(result).lower()
+    assert "americas.example" in joined
+    assert "manrique.example" not in joined

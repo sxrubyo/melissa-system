@@ -146,7 +146,7 @@ async def brave_search(query: str, count: int = 5) -> List[Dict]:
                     "Accept-Encoding":      "gzip",
                     "X-Subscription-Token": BRAVE_API_KEY,
                 },
-                params={"q": query, "count": count, "search_lang": "es", "country": "CO"},
+                params={"q": query, "count": count, "search_lang": "es", "country": "ALL"},
             )
             r.raise_for_status()
             return [

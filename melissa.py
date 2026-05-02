@@ -7438,6 +7438,7 @@ class LLMEngine:
         self.providers: List[LLMProvider] = []
         self._failures:     Dict[str, int]   = {}   # conteo de fallos
         self._blocked_until: Dict[str, float] = {}  # timestamp hasta cuando está bloqueado
+        self._last_success: Dict[str, float] = {}
         self._blacklist_ttl  = 60.0   # segundos de bloqueo tras 3 fallos consecutivos
         self._cache: Dict[str, Tuple[str, float]] = {}
         self._cache_ttl = 300
@@ -7510,7 +7511,15 @@ class LLMEngine:
                 return 2
             return 0
 
-        return sorted(providers, key=_priority)
+        return sorted(
+            providers,
+            key=lambda provider: (
+                _priority(provider),
+                self._failures.get(provider.name, 0),
+                -self._last_success.get(provider.name, 0.0),
+                provider.name,
+            ),
+        )
 
     def _resolve_provider_model(self, provider: LLMProvider,
                                 requested_model: str,
@@ -7549,14 +7558,23 @@ class LLMEngine:
         self._failures[provider_name] = self._failures.get(provider_name, 0) + 1
         count = self._failures[provider_name]
         log.warning(f"[llm] {provider_name} fallo #{count}: {str(error)[:100]}")
-        if count >= 3:
-            self._blocked_until[provider_name] = time.time() + self._blacklist_ttl
-            log.error(f"[llm] {provider_name} BLOQUEADO por {self._blacklist_ttl}s tras {count} fallos")
+        status_code = getattr(getattr(error, "response", None), "status_code", None)
+        block_after = 3
+        block_ttl = self._blacklist_ttl
+        if status_code in (401, 402, 403):
+            block_after = 1
+            block_ttl = max(block_ttl, 1800.0)
+        elif status_code in (429, 500, 502, 503, 504):
+            block_after = 2
+            block_ttl = max(block_ttl, 180.0)
+        if count >= block_after:
+            self._blocked_until[provider_name] = time.time() + block_ttl
+            log.error(f"[llm] {provider_name} BLOQUEADO por {block_ttl}s tras {count} fallos")
         # Guardar métrica en DB para que el admin pueda ver con /v8
         try:
             if db:
                 db.record_metric("llm_failure", provider_name, count,
-                                 {"error": str(error)[:80], "blocked": count >= 3})
+                                 {"error": str(error)[:80], "blocked": count >= block_after, "status_code": status_code})
         except Exception:
             pass
 
@@ -7616,6 +7634,7 @@ class LLMEngine:
 
                 # Éxito — resetear fallos
                 self._failures[provider.name] = 0
+                self._last_success[provider.name] = time.time()
                 if use_cache and db:
                     db.cache_response(ck, response)
                 if db:
@@ -10687,7 +10706,7 @@ class WebSearchEngine:
                     "https://api.search.brave.com/res/v1/web/search",
                     headers={"Accept": "application/json",
                              "X-Subscription-Token": self.brave_key},
-                    params={"q": query, "count": count, "search_lang": "es", "country": "CO"},
+                    params={"q": query, "count": count, "search_lang": "es", "country": "ALL"},
                 )
                 r.raise_for_status()
                 results = r.json().get("web", {}).get("results", [])
@@ -10727,7 +10746,9 @@ class WebSearchEngine:
         Busca un negocio y devuelve (snippet_text, url).
         Prioridad: Google Maps → website oficial → primer organic result.
         """
-        query = f"{nombre} Colombia"
+        nombre_clean = " ".join(str(nombre or "").split()).strip()
+        nombre_norm = _normalize_conv_text(nombre_clean)
+        query = nombre_clean if "colombia" in nombre_norm else f"{nombre_clean} Colombia"
         url   = ""
         text  = ""
 
@@ -10743,20 +10764,29 @@ class WebSearchEngine:
                     r.raise_for_status()
                     data = r.json()
 
+                    local_raw = data.get("local_results") or {}
+                    if isinstance(local_raw, dict):
+                        local_places = local_raw.get("places") or local_raw.get("results") or []
+                    elif isinstance(local_raw, list):
+                        local_places = local_raw
+                    else:
+                        local_places = []
+                    first_local = local_places[0] if local_places and isinstance(local_places[0], dict) else {}
+
                     # 1. Local results → Google Maps link (más confiable para negocios locales)
-                    local = data.get("local_results", [])
-                    if local:
-                        maps_link = (local[0].get("links", {}).get("directions")
-                                     or local[0].get("place_id_search")
+                    if first_local:
+                        maps_link = (first_local.get("links", {}).get("directions")
+                                     or first_local.get("place_id_search")
                                      or "")
-                        website   = local[0].get("links", {}).get("website", "")
+                        website   = first_local.get("links", {}).get("website", "")
                         # Preferir Maps sobre website para que el dueño reconozca su negocio
                         url = maps_link or website
 
                     # 2. Knowledge graph: website o Maps
                     if not url:
                         kg  = data.get("knowledge_graph", {})
-                        url = (kg.get("website") or kg.get("local_map", "") or "")
+                        local_map = data.get("local_map") or {}
+                        url = (kg.get("website") or kg.get("local_map", "") or local_map.get("link", "") or "")
 
                     # 3. Primer organic result (saltar directorios)
                     if not url:
@@ -10775,11 +10805,20 @@ class WebSearchEngine:
                     if ab:
                         s = ab.get("answer") or ab.get("snippet") or ""
                         if s: parts.append(s.strip()[:400])
-                    if local:
-                        addr = local[0].get("address", "")
-                        rating = local[0].get("rating", "")
+                    if first_local:
+                        title = first_local.get("title", "")
+                        biz_type = first_local.get("type", "")
+                        addr = first_local.get("address", "")
+                        rating = first_local.get("rating", "")
+                        website = first_local.get("links", {}).get("website", "")
+                        if title:
+                            parts.append(f"Negocio: {title}")
+                        if biz_type:
+                            parts.append(f"Tipo: {biz_type}")
                         if addr: parts.append(f"Dirección: {addr}")
                         if rating: parts.append(f"Rating: {rating}")
+                        if website:
+                            parts.append(f"Sitio: {website}")
                     for res in data.get("organic_results", [])[:3]:
                         if res.get("snippet"):
                             parts.append(res["snippet"][:200])
@@ -10796,7 +10835,7 @@ class WebSearchEngine:
                         "https://api.search.brave.com/res/v1/web/search",
                         headers={"Accept": "application/json",
                                  "X-Subscription-Token": self.brave_key},
-                        params={"q": query, "count": 5, "search_lang": "es", "country": "CO"},
+                        params={"q": query, "count": 5, "search_lang": "es", "country": "ALL"},
                     )
                     r.raise_for_status()
                     results = r.json().get("web", {}).get("results", [])
@@ -13431,6 +13470,8 @@ class MelissaUltra:
         """
         import base64 as _b64
         import random as _r
+        if not hasattr(self, "_emoji_chats_off"):
+            self._emoji_chats_off = set()
         now = time.time()
         ttl = Config.DEMO_SESSION_TTL
         sk  = f"demo_{chat_id}"
@@ -14639,7 +14680,15 @@ Reglas:
             search_info, found, biz_url = "", False, ""
             try:
                 search_info, biz_url = await self.search.search_business_link(nombre)
-                found = bool(search_info and len(search_info.strip()) > 120)
+                _fallback_url = (
+                    biz_url.startswith("https://www.google.com/maps/search")
+                    or biz_url.startswith("https://www.google.com/search")
+                    or biz_url.startswith("https://serpapi.com/search.json")
+                ) if biz_url else False
+                found = bool(
+                    (search_info and len(search_info.strip()) > 80)
+                    or (biz_url and not _fallback_url)
+                )
                 # Descartar si la URL es de gobierno, Wikipedia o noticias genéricas
                 _skip_domains = [
                     "gov.co", "gov.com", "wikipedia.org", "mintic.gov",
@@ -14663,6 +14712,7 @@ Reglas:
             self._demo_sessions[bctx_key]   = search_info
             self._demo_sessions[bfound_key] = found
             self._demo_sessions[burl_key]   = biz_url
+            self._demo_sessions[blearn_key] = -1 if found else 0
 
             # Extraer datos clave del negocio para el prompt de activación
             if found and search_info:
@@ -14819,6 +14869,32 @@ Máximo 1 oración por burbuja. Natural y seguro."""
                 "cuéntame tú entonces: ¿a qué se dedica exactamente tu negocio?"
             )
 
+        # ── Cambio de negocio en caliente: re-bind sin obligar a reset manual ──
+        _current_business_norm = _normalize_conv_text(business_name or "")
+        _candidate_business_norm = _normalize_conv_text(text or "")
+        _is_business_switch = (
+            business_name
+            and not sim_mode_active
+            and not detected_cmd
+            and _looks_like_business_name_candidate(text)
+            and _candidate_business_norm
+            and _candidate_business_norm != _current_business_norm
+            and _candidate_business_norm not in _current_business_norm
+            and _current_business_norm not in _candidate_business_norm
+            and "?" not in text
+            and not self._demo_should_use_patient_chat_path(text)
+        )
+        if _is_business_switch:
+            keys_del = [k for k in list(self._demo_sessions) if k.startswith(sk + "_") and not k.endswith("_ts")]
+            for k in keys_del:
+                del self._demo_sessions[k]
+            try:
+                with db._conn() as c:
+                    c.execute("DELETE FROM conversations WHERE chat_id=?", (chat_id,))
+            except Exception:
+                pass
+            return await self._handle_demo_message(chat_id, text, clinic)
+
         # ── HUMANFIX BUG C: Dueño pregunta si lo encontramos en internet ────────
         # Sin este bloque el mensaje caía a PASO 3 y Melissa respondía como cliente
         _found_question_signals = [
@@ -14861,17 +14937,67 @@ Máximo 1 oración por burbuja. Natural y seguro."""
                 ]
                 return _send(_r.choice(_no_found_opts))
 
+        _doc_offer_tokens = ("pdf", "audio", "audios", "nota de voz", "documento", "documentos", "archivo", "imagen", "imagenes", "imágenes")
+        _owner_augment_signals = (
+            "te puedo enviar", "te envio", "te envío", "te sirve",
+            "te digo que hacemos", "te digo qué hacemos", "te digo",
+            "te cuento", "te explico", "hacemos", "ofrecemos",
+            "vendemos", "trabajamos", "somos una", "somos un",
+        )
+        if (
+            business_name
+            and not sim_mode_active
+            and not detected_cmd
+            and not self._demo_should_use_patient_chat_path(text)
+            and any(sig in _normalize_conv_text(text or "") for sig in _owner_augment_signals)
+        ):
+            self._demo_sessions[blearn_key] = max(int(self._demo_sessions.get(blearn_key, -1)), 0)
+            _save("user", text)
+            if any(token in _normalize_conv_text(text or "") for token in _doc_offer_tokens):
+                return _send(
+                    "sí, me sirve"
+                    " ||| envíamelo y con eso me ubico mucho más rápido"
+                )
+            return _send(
+                "de una"
+                " ||| cuéntame qué hacen y con eso afino cómo respondería"
+            )
+
         # ── Modo aprendizaje manual: el dueño está contando su negocio ───────────
         # Se activa cuando no había info en Google o fue corregida
         _learn_count = int(self._demo_sessions.get(blearn_key, -1))
+        _learn_passthrough_signals = (
+            "hagamos una demo", "hagamos la demo", "hagamos una simul",
+            "vale hagamos", "quiero ver como respondes", "quiero ver cómo respondes",
+            "quiero ver como atiendes", "quiero ver cómo atiendes",
+            "arranquemos la demo", "arranquemos", "simulemos",
+            "eres real", "eres humano", "eres una ia", "eres ia", "eres un bot", "eres bot",
+            "eres robot", "eres artificial", "eres una maquina", "eres máquina",
+            "eres automatico", "eres automático", "hablas con alguien", "habla con alguien",
+            "hay alguien", "hay una persona", "una persona real", "persona real",
+            "como se que no eres", "cómo sé que no eres", "como saber si eres",
+            "como sabes", "cómo sabes", "eres inteligencia artificial",
+            "quien eres", "quién eres", "que eres", "qué eres",
+            "soy un bot", "esto es un bot", "es un bot", "es una ia",
+            "para que", "para qué", "por que", "por qué",
+        )
+        _learn_text_low = text.lower().strip()
         _in_learn_mode = (
             business_name and
-            not self._demo_sessions.get(bfound_key, False) and
             _learn_count >= 0 and
-            not detected_cmd
+            not sim_mode_active and
+            not detected_cmd and
+            not any(sig in _learn_text_low for sig in _learn_passthrough_signals) and
+            not self._demo_should_use_patient_chat_path(text)
         )
 
         if _in_learn_mode:
+            if any(token in _normalize_conv_text(text or "") for token in _doc_offer_tokens):
+                _save("user", text)
+                return _send(
+                    "sí, me sirve"
+                    " ||| envíamelo y con eso me ubico mucho más rápido"
+                )
             _save("user", text)
             # Acumular lo que nos va diciendo en el ctx
             _ctx_manual = self._demo_sessions.get(bctx_key, "")
@@ -20352,7 +20478,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Melissa v8.0",
     description="Melissa V8.0 — Agente de Recepción Hipernaturalmente Humana",
-    version="8.0.8",
+    version="8.0.9",
     lifespan=lifespan
 )
 
@@ -20795,7 +20921,7 @@ async def health():
 
     return {
         "status":         "online",
-        "version":        "8.0.8",
+        "version":        "8.0.9",
         "clinic":         clinic.get("name", "sin configurar"),
         "sector":         Config.SECTOR or clinic.get("sector", "otro"),
         "setup_done":     bool(clinic.get("setup_done")),
