@@ -240,11 +240,31 @@ def _remove_runtime_target(path: Path) -> None:
 
 def _sync_dir_smart(src: Path, dst: Path) -> None:
     """
-    Sync de directorio que ACTUALIZA archivos sin borrar extras.
-    A diferencia de copytree(dirs_exist_ok=False), no elimina archivos
-    que solo existen en el destino (configuraciones del cliente).
+    Sync de directorio que refleja el runtime base SIN tocar archivos
+    protegidos del cliente.
+    Borra entradas runtime obsoletas del destino, pero conserva rutas
+    protegidas como knowledge_base, souls, personas del cliente, etc.
     """
     dst.mkdir(parents=True, exist_ok=True)
+    src_items = {item.relative_to(src) for item in src.rglob("*")}
+
+    for existing in sorted(dst.rglob("*"), key=lambda path: len(path.parts), reverse=True):
+        rel = existing.relative_to(dst)
+        top = rel.parts[0] if rel.parts else ""
+        if top in INSTANCE_PROTECTED_PATHS:
+            continue
+        if rel in src_items:
+            continue
+        try:
+            if existing.is_dir() and not existing.is_symlink():
+                if any(existing.iterdir()):
+                    continue
+                existing.rmdir()
+            else:
+                existing.unlink()
+        except Exception:
+            pass
+
     for item in src.rglob("*"):
         rel = item.relative_to(src)
         target = dst / rel

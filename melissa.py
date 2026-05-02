@@ -4158,116 +4158,123 @@ class AntiRobotFilter:
     Cada patrón aquí fue identificado en conversaciones reales que fracasaron.
     """
 
-    # Frases que NUNCA debe decir una recepcionista real colombiana por WhatsApp
-    FORBIDDEN_EXACT = {
-        # Frases de call center / chatbot
+    # ══════════════════════════════════════════════════════════════════
+    # ESTRATEGIA v11 — PROMPT-FIRST, FILTER-LAST
+    # ══════════════════════════════════════════════════════════════════
+    # El filtro ya NO mutila el texto generado por el LLM.
+    # La defensa principal es el system prompt: le decimos al LLM qué
+    # NO decir ANTES de que lo genere. El filtro solo actúa sobre
+    # frases que son completamente autónomas (inicio/fin de texto) y
+    # que NUNCA aparecen en contexto legítimo mid-sentence.
+    #
+    # FORBIDDEN_HARD  → filtro activo, solo en borde de texto (start/end)
+    # FORBIDDEN_SOFT  → solo inyección en system prompt, NUNCA mutila texto
+    # ══════════════════════════════════════════════════════════════════
+
+    # Frases que NUNCA son parte legítima de una oración — se remueven
+    # solo si aparecen al inicio o al final del texto (no mid-sentence).
+    FORBIDDEN_HARD = {
+        "como modelo de lenguaje",
+        "como ia",
+        "como inteligencia artificial",
+        "soy tu asistente virtual",
+        "soy una asistente virtual",
+        "la asistente virtual",
+        "la recepcionista virtual",
+        "mis capacidades",
+        "mis limitaciones",
+        "no tengo acceso a",
+        "cualquier otra duda no dudes en escribirnos",
+        "no dudes en contactarnos",
+        "no dudes en escribirnos",
+        "estamos a tu disposición",
+        "estamos a su disposición",
+        "hasta pronto y que tengas un excelente día",
+        "qué zona te está molestando, o qué es lo que te trae por acá hoy",
+        "oye, qué fue lo que te hizo escribirnos hoy, qué necesitas",
+        "nuestros profesionales altamente capacitados",
+        "nuestro equipo de expertos",
+        "tu satisfacción es lo más importante",
+    }
+
+    # Frases que queremos que el LLM NO genere — se inyectan en el
+    # system prompt como instrucciones. NUNCA se usan para mutilar texto.
+    FORBIDDEN_SOFT = {
         "con mucho gusto", "encantada de ayudarte", "encantado de ayudarte",
         "encantada de atenderte", "encantado de atenderte",
         "fue un placer", "ha sido un placer", "es un placer",
         "en qué más te puedo ayudar", "en qué más le puedo ayudar",
         "en qué más puedo ayudarte", "en qué más puedo ayudarte hoy",
-        "¿en qué más puedo servirte?", "en qué puedo servirte",
+        "en qué puedo servirte",
         "con mucho gusto te ayudo", "con mucho gusto le ayudo",
         "quedamos a tus órdenes", "quedamos a tu servicio",
         "a tus órdenes", "estamos para servirte",
-        # Frases de bot disfrazado
         "entiendo tu consulta", "entiendo tu pregunta",
         "me alegra que preguntes", "me alegra que hayas contactado",
         "gracias por contactarnos", "gracias por comunicarte con nosotros",
         "gracias por escribirnos", "gracias por tu mensaje",
         "gracias por tu interés", "gracias por tu confianza",
         "agradezco tu paciencia", "agradezco tu comprensión",
-        # Aperturas de robot
-        "hola, soy melissa", "hola, mi nombre es melissa",
-        "soy tu asistente virtual", "soy una asistente virtual",
-        "la asistente virtual", "la recepcionista virtual",
         "como asistente", "como tu asistente",
-        # Frases de relleno que agregan cero valor
         "claro que sí", "por supuesto que sí",
         "no hay ningún problema", "no hay problema alguno",
         "con todo el gusto", "con todo gusto",
         "para mí es un placer", "es un placer atenderte",
-        # Cierres robóticos
-        "cualquier otra duda no dudes en escribirnos",
-        "no dudes en contactarnos", "no dudes en escribirnos",
         "estamos a tu disposición", "estamos a su disposición",
-        "hasta pronto y que tengas un excelente día",
         "te deseo un excelente día", "que tengas un buen día",
         "buen día", "buena tarde", "buena noche",
-        # AI tells
-        "como modelo de lenguaje", "como ia", "como inteligencia artificial",
-        "mis capacidades", "mis limitaciones", "no tengo acceso a",
-        # Frases de call center directivo — NUNCA
-        "que necesitas?", "que necesitas", "que necesitas.", "cuéntame que necesitas",
-        "dime que necesitas", "en que te puedo ayudar?", "en que te ayudo?",
-        "en qué le puedo ayudar?", "en qué le ayudo?",
-        "como te puedo ayudar?", "como le puedo ayudar?",
+        "que necesitas?", "cuéntame que necesitas",
+        "dime que necesitas", "en que te puedo ayudar?",
         "cómo te puedo ayudar?", "cómo le puedo ayudar?",
-
-        # V8.1 — Patrones adicionales detectados en producción
-        "qué zona te está molestando, o qué es lo que te trae por acá hoy",  # horrible compuesto
-        "oye, qué fue lo que te hizo escribirnos hoy, qué necesitas",  # idem
-        "ay caramba",  # expresión forzada
-        "ay caramba,",
-        "ya te he preguntado",  # agresivo
-        "te he preguntado un par de veces",
+        "ay caramba",
+        "ya te he preguntado", "te he preguntado un par de veces",
         "me alegra que lo hayas mencionado",
-        "qué buena pregunta",
-        "excelente pregunta",
-        "buena pregunta",
-        "gracias por la pregunta",
-        "me alegra que preguntes eso",
+        "qué buena pregunta", "excelente pregunta", "buena pregunta",
+        "gracias por la pregunta", "me alegra que preguntes eso",
         "te entiendo completamente",
-        "absolutamente",
-        "definitivamente",
-        "ciertamente",
-        "sin lugar a dudas",
-        "con toda la seguridad",
-        "no te preocupes para nada",
-        "no hay ningún inconveniente",
-        "todo está bajo control",
-        "estamos aquí para ti",
+        "absolutamente", "definitivamente", "ciertamente",
+        "sin lugar a dudas", "con toda la seguridad",
+        "no te preocupes para nada", "no hay ningún inconveniente",
+        "todo está bajo control", "estamos aquí para ti",
         "es nuestra prioridad",
-        "tu satisfacción es lo más importante",
-        "nuestro equipo de expertos",
-        "nuestros profesionales altamente capacitados",
     }
 
+    # Mantener FORBIDDEN_EXACT como alias de HARD+SOFT para compatibilidad
+    # con código externo que la referencia (score_humanness, etc.)
+    FORBIDDEN_EXACT = FORBIDDEN_HARD | FORBIDDEN_SOFT
+
+    @classmethod
+    def build_antibot_prompt_block(cls) -> str:
+        """
+        Genera el bloque de instrucciones que se inyecta en el system prompt
+        para que el LLM directamente NO genere frases de bot.
+        Esta es la defensa principal — mucho más segura que mutilar texto.
+        """
+        phrases = sorted(cls.FORBIDDEN_SOFT | cls.FORBIDDEN_HARD)
+        sample = '", "'.join(list(phrases)[:18])
+        return (
+            f'FRASES PROHIBIDAS — nunca las uses: "{sample}" '
+            f'y cualquier variante de call center, chatbot corporativo o asistente virtual. '
+            f'Escribe como una persona real por WhatsApp: directo, breve, sin protocolo.'
+        )
+
     # Patrones regex que revelan bot (nivel 2+)
+    # SOLO se aplican si la burbuja completa es la frase (match de inicio a fin)
+    # o si el patrón está al comienzo/fin — NUNCA mid-sentence.
     FORBIDDEN_PATTERNS_L2 = [
-        r"claro que (sí|si),?\s",           # "Claro que sí, te ayudo con..."
-        r"con (mucho\s)?gusto[,.]?\s",       # "Con gusto te explico..."
-        r"por\s+supuesto[,.]?\s",            # "Por supuesto, entendemos..."
-        r"entiendo perfectamente",
-        r"entiendo\s+tu\s+(situación|caso|consulta|pregunta|inquietud)",
-        r"te\s+(entiendo|comprendo|escucho)[,.]?\s+y\s+",  # "Te entiendo, y eso es..."
-        r"es\s+una\s+(excelente|buena|gran)\s+pregunta",
-        r"(muy\s+)?importante\s+que\s+(sepas|conozcas|tengas\s+en\s+cuenta)",
-        r"te\s+brindo\s+(la\s+)?información",
-        r"te\s+proporciono",
-        r"te\s+facilito",
         r"(?:la\s+)?asistente\s+virtual",
         r"(?:la\s+)?recepcionista\s+virtual",
-        r"¡(hola|buenas|bienvenid)!\s*¿en qué",          # Apertura doble exclamación+pregunta
-        r"^\s*¡",                                          # Apertura con ¡
+        r"¡(hola|buenas|bienvenid)!\s*¿en qué",
+        r"^\s*¡",                                    # Apertura con ¡
         r"sería\s+(un\s+)?placer",
         r"será\s+(un\s+)?placer",
-        r"(no\s+)?dudes\s+en\s+(escribir|contactar|llamar)",
-        r"quedo\s+a\s+tu\s+disposición",
-        r"quedo\s+pendiente\s+de\s+tu",
         r"espero\s+(haberte|haber)\s+ayudado",
         r"espero\s+que\s+(esta\s+)?información\s+(te\s+)?sea",
     ]
 
     # Patrones nivel 3 (muy agresivo — solo si admin lo activa)
     FORBIDDEN_PATTERNS_L3 = [
-        r"^hola[,!]\s",                      # Todas las respuestas que empiezan con "Hola,"
-        r"^buenas[,!]\s",
         r"^por\s+favor",
-        r"te\s+recomiendo\s+que",
-        r"es\s+importante\s+que",
-        r"recuerda\s+que",
-        r"ten\s+en\s+cuenta\s+que",
         r"cabe\s+(mencionar|destacar|resaltar)",
         r"es\s+(muy\s+)?importante\s+(mencionar|destacar)",
     ]
@@ -4330,24 +4337,39 @@ class AntiRobotFilter:
         return text
 
     def _remove_forbidden_exact(self, text: str) -> str:
-        """Elimina frases exactas prohibidas sin mutilar el texto adyacente."""
-        text_lower = text.lower()
-        for phrase in self.FORBIDDEN_EXACT:
-            if phrase in {"hola, soy melissa", "hola, mi nombre es melissa"}:
-                if any(
-                    marker in text_lower for marker in ["asesora virtual", "asesora de", "del equipo de"]
-                ):
-                    continue
-            if phrase in text_lower:
-                idx = text_lower.find(phrase)
-                before = text[:idx].rstrip(', ')
-                after  = text[idx + len(phrase):].lstrip(', ')
-                # v10: solo eliminar si el texto restante sigue siendo coherente
-                # Si quedaría muy corto o vacío, dejar la respuesta intacta
-                candidate = (before + (' ' if before and after else '') + after).strip()
-                if len(candidate) >= max(8, len(text) * 0.35):
-                    text = candidate
+        """
+        v11 — SOLO usa FORBIDDEN_HARD y SOLO remueve en bordes del texto.
+        Nunca corta mid-sentence. La defensa principal es el system prompt
+        (build_antibot_prompt_block), no esta función.
+        """
+        text_lower = text.lower().strip()
+        for phrase in self.FORBIDDEN_HARD:
+            if phrase not in text_lower:
+                continue
+            stripped = text.strip()
+            lower_stripped = stripped.lower()
+
+            # Caso 1: la frase ES todo el texto → reemplazar con ""
+            if lower_stripped == phrase:
+                return ""
+
+            # Caso 2: la frase está al INICIO del texto
+            if lower_stripped.startswith(phrase):
+                rest = stripped[len(phrase):].lstrip(' ,.!?;:')
+                if rest and len(rest) >= 8:
+                    text = rest[0].upper() + rest[1:]
                     text_lower = text.lower()
+                    continue
+
+            # Caso 3: la frase está al FINAL del texto
+            if lower_stripped.endswith(phrase):
+                rest = stripped[: len(stripped) - len(phrase)].rstrip(' ,.!?;:')
+                if rest and len(rest) >= 8:
+                    text = rest
+                    text_lower = text.lower()
+                    continue
+
+            # Mid-sentence → NO tocar (evita cortes y palabras colgadas)
         return text
 
     def _remove_forbidden_patterns(self, text: str, patterns: list) -> str:
@@ -4410,14 +4432,15 @@ class AntiRobotFilter:
             score -= 0.12
 
         # ── Penalización por emojis excesivos ─────────────────────────────────
+        # v11: 1-2 emojis es natural en negocios colombianos — no penalizar
         emoji_count = len(re.findall(
             r'[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF]',
             text
         ))
-        if emoji_count > 3:
-            score -= 0.15
-        elif emoji_count > 1:
-            score -= 0.05
+        if emoji_count > 4:
+            score -= 0.20   # spam de emojis sí penaliza
+        elif emoji_count > 2:
+            score -= 0.05   # leve — 3 puede ser aceptable
 
         # ── Penalización por signos de apertura ───────────────────────────────
         if '¿' in text or '¡' in text:
@@ -5650,7 +5673,8 @@ def _v8_process_response_inner(response: str, chat_id: str, archetype: str) -> s
             part = part.strip()
             if part:
                 cleaned = anti_robot_filter.process(part, archetype)
-                if cleaned:
+                # v11: solo agregar si tiene contenido real (no solo puntuación ni conector suelto)
+                if cleaned and re.search(r'\w', cleaned) and len(cleaned.strip()) > 2:
                     cleaned_parts.append(cleaned)
         response = " ||| ".join(cleaned_parts)
     else:
@@ -8776,9 +8800,9 @@ class ResponseGenerator:
         normalized = _normalize_conv_text(user_msg or "")
 
         intro_variants = [
-            f"Soy {agent_name}{f', la asesora de {clinic_name}' if clinic_name else ', la asesora'}. Estoy acá para orientarte y ayudarte con lo que necesites",
-            f"Hola, soy {agent_name}{f', del equipo de {clinic_name}' if clinic_name else ''}. Cuéntame en qué te ayudo",
-            f"Soy {agent_name}{f', la asesora de {clinic_name}' if clinic_name else ''}. Cualquier duda o info que necesites, aquí estoy",
+            f"Soy {agent_name}{f', la asesora virtual de {clinic_name}' if clinic_name else ', la asesora virtual'}. Soy una IA hecha para orientarte y ayudarte con lo que necesites",
+            f"Hola, soy {agent_name}{f', la asesora virtual de {clinic_name}' if clinic_name else ', la asesora virtual'}. Soy una IA pensada para llevar este chat con criterio",
+            f"Soy {agent_name}{f', la asesora virtual de {clinic_name}' if clinic_name else ', la asesora virtual'}. Te acompaño con dudas, servicios y primeros pasos sin sonar rígida",
         ]
         intro = intro_variants[len(normalized) % len(intro_variants)]
 
@@ -12225,7 +12249,7 @@ class MelissaUltra:
         self._last_reviewed_chat: Optional[str] = None
         self._availability_pending_patient: Optional[str] = None
         self._demo_sessions: Dict[str, float] = {}
-        self._emoji_chats: set = set()
+        self._emoji_chats_off: set = set()  # v11: chats que pidieron SIN emojis
         self._chat_routes: Dict[str, Dict[str, Any]] = {}
 
     def _remember_route(self, chat_id: str, route: Optional[Dict[str, Any]] = None):
@@ -13484,9 +13508,22 @@ class MelissaUltra:
                 )
             _save("assistant", r)
             bubbles = self._split_bubbles(r, chat_id=chat_id, archetype=_demo_archetype)
+            if should_normalize_first_turn and len(bubbles) == 1:
+                _text_norm = _normalize_conv_text(text or "")
+                _greeting_tokens = (
+                    "hola", "buenas", "buenas tardes", "buenos dias", "buenos días",
+                    "buenas noches", "hey", "holi",
+                )
+                if any(_text_norm == token or _text_norm.startswith(token + " ") for token in _greeting_tokens):
+                    lowered_bubble = _normalize_conv_text(bubbles[0] or "")
+                    if not any(token in lowered_bubble for token in ("cuentame", "cuéntame", "revisar", "ayudo", "ayudar")):
+                        bubbles.append("cuéntame qué te gustaría revisar")
             tone = self._demo_sessions.get(btone_key, "GENERAL")
             if tone in ("SALUD PREMIUM", "PREMIUM"):
                 bubbles = [b[0].upper() + b[1:] if b else b for b in bubbles]
+            # v11: primera burbuja siempre con mayúscula inicial
+            if bubbles:
+                bubbles[0] = bubbles[0][0].upper() + bubbles[0][1:] if bubbles[0] else bubbles[0]
             return bubbles
 
         # ── FIX v10: Reset check ANTES del conversation core ─────────────────────
@@ -13608,18 +13645,28 @@ class MelissaUltra:
         }
 
         # Detección natural de emojis en texto libre
-        _emoji_on_signals  = ["usa emojis","ponle emojis","escribe con emojis",
-                               "activa los emojis","quiero emojis","pon emojis"]
-        _emoji_off_signals = ["sin emojis","quita los emojis","sin tanto emoji",
-                               "desactiva emojis","no más emojis","sin eso"]
+        _emoji_on_signals  = [
+            "usa emojis","ponle emojis","escribe con emojis",
+            "activa los emojis","quiero emojis","pon emojis",
+            "enviame emojis","envíame emojis","mándame emojis",
+            "mandame emojis","con emojis","agrega emojis","añade emojis",
+        ]
+        _emoji_off_signals = [
+            "sin emojis","quita los emojis","sin tanto emoji","sin esos emojis",
+            "desactiva emojis","no más emojis","no me mandes emojis",
+            "no uses emojis","no pongas emojis","sin caritas","sin los emojis",
+            "quitale los emojis","no me envies emojis","no me envíes emojis",
+        ]
         if any(s in text_norm for s in _emoji_on_signals):
-            self._emoji_chats.add(chat_id)
+            self._emoji_chats_off.discard(chat_id)  # v11: re-activar emojis
             _save("user", text)
-            return _send("listo, ahora escribo con emojis 🎉 ||| sigue hablándome como cliente")
+            _biz_hint = f" en {business_name}" if business_name else ""
+            return _send(f"listo, ahora escribo con emojis 😊 ||| sigue hablándome como si fueras un cliente{_biz_hint}")
         if any(s in text_norm for s in _emoji_off_signals):
-            self._emoji_chats.discard(chat_id)
+            self._emoji_chats_off.add(chat_id)  # v11: desactivar emojis
             _save("user", text)
-            return _send("listo, sin emojis de ahora en adelante ||| sigue hablándome como cliente")
+            _biz_hint = f" en {business_name}" if business_name else ""
+            return _send(f"listo, sin emojis ||| sigue hablándome como si fueras un cliente{_biz_hint}")
 
         detected_cmd = None
         model_request = extract_model_request_from_text(text_norm)
@@ -13681,7 +13728,8 @@ class MelissaUltra:
                 return eng
 
             # auto: engine global
-            return llm_engine or (self.generator.llm if self.generator else None)
+            _generator = getattr(self, "generator", None)
+            return llm_engine or (_generator.llm if _generator else None)
 
         # ── Helpers locales ───────────────────────────────────────────────────
         async def _llm(sys_p, usr_p, temp=0.82, max_t=250, model_tier="fast"):
@@ -13697,7 +13745,8 @@ class MelissaUltra:
                     use_cache=False,
                 )
                 log.info(f"[demo] {meta.get('provider','?')} model={meta.get('model','?')[:30]}")
-                return self.generator._postprocess(r, PersonalityProfile())
+                _generator = getattr(self, "generator", None)
+                return _generator._postprocess(r, PersonalityProfile()) if _generator else r
             except Exception as e:
                 log.error(f"[demo] llm error: {e}")
                 return None
@@ -13718,7 +13767,8 @@ class MelissaUltra:
                     use_cache=False,
                 )
                 log.info(f"[demo] {meta.get('provider','?')} model={meta.get('model','?')[:30]}")
-                return self.generator._postprocess(r, PersonalityProfile())
+                _generator = getattr(self, "generator", None)
+                return _generator._postprocess(r, PersonalityProfile()) if _generator else r
             except Exception as e:
                 log.error(f"[demo] llm_conv error: {e}")
                 return None
@@ -13733,6 +13783,8 @@ class MelissaUltra:
             model_tier: str = "fast",
             recent_limit: int = 8,
         ) -> Tuple[Optional[str], bool]:
+            _chain_start = time.time()
+            _CHAIN_TIMEOUT_S = 45  # si pasaron más de 45s entre intentos, no enviar respuesta vieja
             attempts = [
                 (system_prompt, temp, max_t, model_tier, recent_limit),
                 (
@@ -13748,6 +13800,10 @@ class MelissaUltra:
             ]
             had_output = False
             for prompt_now, temp_now, max_now, tier_now, limit_now in attempts:
+                # No lanzar repair si ya pasó demasiado tiempo desde que llegó el mensaje
+                if time.time() - _chain_start > _CHAIN_TIMEOUT_S:
+                    log.warning("[demo] conv_quality_chain abortada por timeout (%ds)", _CHAIN_TIMEOUT_S)
+                    break
                 candidate = await _llm_conv(
                     prompt_now,
                     temp=temp_now,
@@ -13794,6 +13850,9 @@ class MelissaUltra:
             tone = self._demo_sessions.get(btone_key, "GENERAL")
             if tone in ("SALUD PREMIUM", "PREMIUM"):
                 bubbles = [b[0].upper() + b[1:] if b else b for b in bubbles]
+            # v11: primera burbuja siempre con mayúscula inicial
+            if bubbles:
+                bubbles[0] = bubbles[0][0].upper() + bubbles[0][1:] if bubbles[0] else bubbles[0]
             return bubbles
 
         def _looks_like_business_name_candidate(raw_text: str) -> bool:
@@ -13992,6 +14051,10 @@ class MelissaUltra:
             for part in parts:
                 norm_part = _normalize_conv_text(part)
                 words = norm_part.split()
+                if len(words) <= 2 and any(token in norm_part for token in ("hoy", "y tu", "y tú", "que mas", "qué más")):
+                    return True
+                if len(words) <= 2 and part.strip().endswith("?"):
+                    return True
                 if len(words) >= 3 and len(words[-1]) <= 2 and words[-1] not in safe_tail_words:
                     return True
             bad_markers = (
@@ -14043,28 +14106,28 @@ class MelissaUltra:
             return False
 
         def _demo_customer_last_resort(user_text: str) -> str:
-            lowered = _normalize_conv_text(user_text or "")
-            if any(token in lowered for token in ("cita", "agendar", "agenda", "seguimos", "siguiente paso", "como seguimos", "cómo seguimos")):
+            """
+            Fallback REAL — solo cuando TODOS los modelos LLM fallan en simulación.
+            No intenta ser inteligente. El LLM maneja todo lo demás.
+            """
+            _biz = business_name or "el negocio"
+            _user = _normalize_conv_text(user_text or "")
+            if any(token in _user for token in ("cita", "agendar", "agenda", "valoracion", "valoración", "horario", "disponibilidad")):
                 return (
-                    "si quieres agendar, te tomo el nombre y el horario que te sirva"
-                    " ||| con eso te dejo el siguiente paso listo"
+                    f"si quieres seguimos con el siguiente paso para agendar en {_biz}"
+                    " ||| dime tu nombre y el horario que mejor te quede"
                 )
-            if any(token in lowered for token in ("precio", "cuanto", "cuánto", "vale", "costo", "coste")):
+            if any(token in _user for token in ("precio", "cuesta", "vale", "coste", "cuanto", "cuánto")):
                 return (
-                    "no tengo ese dato exacto ahora"
-                    " ||| si quieres, te lo confirmo y te lo paso por aquí"
+                    f"te puedo ubicar con el precio o la valoración de {_biz}"
+                    " ||| dime qué tratamiento estás mirando"
                 )
-            if "miedo" in lowered:
+            if any(token in _user for token in ("miedo", "asusta", "nerv", "exagerad", "natural")):
                 return (
-                    "ese miedo es normal"
-                    " ||| acá lo trabajan muy conservador para que se vea natural"
+                    f"en {_biz} lo normal es arrancar viendo qué resultado quieres"
+                    " ||| qué es lo que más te preocupa"
                 )
-            if any(token in lowered for token in ("audio", "audios", "pdf", "imagen", "foto", "documento")):
-                return (
-                    "sí, me lo puedes mandar por aquí"
-                    " ||| lo reviso y seguimos desde eso"
-                )
-            return "te sigo por aquí ||| cuéntame qué te gustaría revisar y lo vemos"
+            return f"cuéntame qué necesitas de {_biz}"
 
         async def _demo_llm_quality_chain(
             system_prompt: str,
@@ -14118,57 +14181,38 @@ class MelissaUltra:
             explain_name: bool = False,
             current_business_name: str = "",
         ) -> str:
-            lowered = _normalize_conv_text(user_text)
-            has_bound_business = bool((current_business_name or "").strip())
-            if any(token in lowered for token in ("quien te hizo", "quién te hizo", "como te hicieron", "cómo te hicieron", "como tenerte", "cómo tenerte")):
-                return (
-                    "Me hizo BlackBoss, el equipo de Santiago Rubio"
-                    " ||| Si quieres algo así para tu negocio, el contacto es 3124348669"
-                )
-            if any(token in lowered for token in ("audio", "audios", "nota de voz", "pdf", "archivo", "documento", "imagen")):
-                return (
-                    "Sí, cuando el canal lo permite puedo trabajar con audios, PDFs, imágenes y documentos"
-                    " ||| Si quieres, te muestro cómo se vería eso en tu negocio"
-                )
-            if "5 x 4" in lowered or "5x4" in lowered:
-                return "5 por 4 son 20 ||| y si quieres, ahora sí te muestro cómo trabajaría en tu negocio"
-            if "capital de francia" in lowered:
-                return "La capital de Francia es París ||| y si quieres, ahora sí te muestro cómo trabajaría en tu negocio"
-            if any(token in lowered for token in ("estafa", "scam", "fraude", "fake")):
-                return (
-                    "No, no es una estafa. Esto es una demo real para mostrar cómo trabajaría yo dentro del WhatsApp de un negocio"
-                    " ||| Si quieres, primero te explico cómo funciono y luego me dices cómo se llama tu negocio"
-                )
-            if explain_name or any(token in lowered for token in ("para que", "para qué", "no te lo dare", "no te lo daré", "no te doy", "no quiero dar")):
-                if has_bound_business:
+            """
+            Fallback REAL — solo se ejecuta cuando TODOS los modelos LLM fallan.
+            No intenta ser inteligente. El domino (LLM) maneja todo lo demás.
+            """
+            _biz = (current_business_name or business_name or "").strip()
+            _user = _normalize_conv_text(user_text or "")
+            if any(token in _user for token in ("para que", "para qué", "por que", "por qué")):
+                if _biz:
                     return (
-                        f"Te lo pedí para hablar como si ya llevara el chat de {current_business_name}"
+                        f"te lo pido para hablar como si ya llevara el chat de {_biz}"
                         " ||| así la demo te muestra mejor cómo respondería de verdad"
                     )
                 return (
-                    "Te pido el nombre para hablar como si ya llevara tu WhatsApp, no para llenarte de preguntas"
-                    " ||| Si prefieres, primero te muestro cómo trabajo y luego me dices cómo se llama tu negocio"
+                    "te lo pido para ubicar el tono, el contexto y cómo tendría que responder"
+                    " ||| apenas me digas el nombre del negocio te muestro la demo bien aterrizada"
                 )
-            if any(token in lowered for token in ("me mandaron tu numero", "me mandaron tu número", "me pasaron tu numero", "me pasaron tu número", "que haces exactamente", "qué haces exactamente")):
-                if has_bound_business:
-                    return (
-                        f"Yo sería la que lleva el chat de {current_business_name}"
-                        " ||| respondo clientes, filtro interesados y mantengo la conversación bien llevada"
-                    )
+            if _biz:
+                return f"escríbeme como si fueras un cliente de {_biz} y arranco"
+            if any(
+                token in _user
+                for token in (
+                    "me mandaron tu numero", "me mandaron tu número", "me pasaron tu numero",
+                    "me pasaron tu número", "que haces", "qué haces", "no entiendo que haces",
+                    "no entiendo qué haces", "quien eres", "quién eres",
+                )
+            ):
                 return (
-                    "Soy Melissa. Respondo clientes, filtro interesados, explico servicios, muevo citas y me adapto al tono del negocio"
-                    " ||| Si quieres verlo bien, pásame el nombre de tu negocio y arrancamos"
+                    "soy Melissa, la asesora virtual que llevaría tu chat"
+                    " ||| respondo clientes, filtro interesados, ubico servicios y ayudo con citas"
+                    " ||| pásame el nombre de tu negocio y arranco"
                 )
-            if has_bound_business:
-                return (
-                    f"Yo sería la que lleva el WhatsApp de {current_business_name}"
-                    " ||| si quieres, háblame como cliente y te muestro cómo respondería"
-                )
-            return (
-                "Hola, soy Melissa. Llevo chats de negocio como si ya estuviera dentro del equipo"
-                " ||| Respondo clientes, filtro interesados, explico servicios y ordeno la conversación"
-                " ||| Si quieres verlo bien, dime cómo se llama tu negocio"
-            )
+            return "soy Melissa, la asesora virtual que llevaría tu chat ||| pásame el nombre de tu negocio y arranco"
 
         async def _demo_owner_onboarding_reply(*, explain_name: bool = False, force_stage: Optional[str] = None) -> List[str]:
             user_block = text
@@ -14215,6 +14259,27 @@ REGLAS EXTRA DE ESTA DEMO:
 - si sospechan estafa o no quieren dar el nombre del negocio, baja la guardia y explica para qué lo pides sin sonar defensiva
 - nunca menciones Nova, Clínica de las Américas ni branding heredado
 - no dejes frases colgadas ni respuestas cortadas
+
+REGLA DE ORO ANTI-CORTE (HUMANFIX):
+Cada respuesta DEBE terminar con una pregunta o invitación. NUNCA termines en afirmación seca.
+Si no sabes qué más decir, la última burbuja es siempre una de estas:
+  - "cuál es el nombre de tu negocio para arrancar"
+  - "escríbeme como si fueras un cliente a ver qué pasa"
+  - "qué quieres revisar primero"
+Una respuesta de 1 sola burbuja sin "?" es una respuesta INCOMPLETA — agrégale la invitación.
+
+EJEMPLOS DE RESPUESTAS BUENAS vs MALAS:
+  MALO: "soy la que responde acá"
+  BUENO: "soy Melissa, la que llevaría el chat de tu negocio ||| cuéntame, cómo se llama tu empresa"
+
+  MALO: "la idea es que yo me encargue"
+  BUENO: "la idea es que yo lleve el chat por ti — respondo clientes, filtro interesados, muevo citas ||| ¿de qué negocio es tu demo?"
+
+  MALO: "aquí me encargo de atender el chat"
+  BUENO: "me encargo de atender el chat como si fuera parte del equipo ||| cuál es el nombre de tu negocio"
+
+  MALO: "soy una persona que responde en whatsapp"
+  BUENO: "soy Melissa — respondo por WhatsApp como si llevara tiempo en tu equipo ||| cómo se llama tu negocio para mostrarte cómo quedaría"
 """
             def _owner_validator(candidate: Optional[str]) -> bool:
                 lowered_candidate = _normalize_conv_text(candidate or "")
@@ -14228,6 +14293,17 @@ REGLAS EXTRA DE ESTA DEMO:
                         ]
                         if biz_tokens and not any(token in lowered_candidate for token in biz_tokens):
                             return True
+                # HUMANFIX: rechazar respuestas de 1 burbuja sin invitación de seguimiento
+                _cand_parts = [p.strip() for p in re.split(r"\s*\|\|\|\s*", candidate or "") if p.strip()]
+                _cand_low = lowered_candidate
+                _has_invitation = any(s in _cand_low for s in (
+                    "?", "cuál es", "cual es", "cómo se llama", "como se llama",
+                    "escríbeme", "escribeme", "cuéntame", "cuentame",
+                    "dime", "pásame", "pasame", "arrancamos", "probame",
+                    "para arrancar", "para empezar",
+                ))
+                if len(_cand_parts) == 1 and not _has_invitation:
+                    return True  # respuesta cortada → regenerar
                 return _demo_owner_reply_is_low_quality(candidate) or _demo_owner_missing_required_detail(text, candidate)
 
             response, had_model_output = await _demo_llm_quality_chain(
@@ -14239,8 +14315,10 @@ REGLAS EXTRA DE ESTA DEMO:
 - si vas a pedir el nombre del negocio, hazlo solo después de responder
 - evita respuestas de una sola palabra o de una sola línea vacía
 - no dejes una burbuja sola como "puedes", "claro" o "sí"
-                - si preguntan qué haces, menciona varias capacidades reales y luego pide el nombre del negocio sin vender humo
-                - si preguntan para qué querías el nombre, explica que era para sonar como el chat real del negocio y hacer la demo bien ubicada
+- si preguntan qué haces, menciona varias capacidades reales y luego pide el nombre del negocio sin vender humo
+- si preguntan para qué querías el nombre, explica que era para sonar como el chat real del negocio y hacer la demo bien ubicada
+- OBLIGATORIO: termina con una pregunta o invitación — nunca en afirmación seca
+- si solo tienes 1 burbuja, agrega una segunda que pida el nombre del negocio o invite a probar
 """,
             )
             if not response:
@@ -14417,7 +14495,9 @@ Reglas:
                 return await _demo_owner_onboarding_reply()
 
         # ── PASO 1: Recibe nombre → busca en web → entra en personaje ─────────
-        if not business_name and len(history) <= 2:
+        # HUMANFIX: ventana ampliada de 2 a 12 — el nombre puede llegar tarde
+        # si en los primeros turnos el dueño preguntó qué es o se confundió
+        if not business_name and len(history) <= 12:
             nombre_raw = text.strip()
 
             # Validar que no sea error de audio (sin límite duro de chars — la gente describe el negocio)
@@ -14458,14 +14538,41 @@ Reglas:
                 )
 
             # Detectar si es nombre de persona en vez de negocio
+            # HUMANFIX: solo rechazar si es un nombre humano CONOCIDO.
+            # Nombres creativos como "Peludos", "Bigotes", "Glamour" son negocios válidos.
             _biz = ["clinica","clinic","centro","consultorio","tienda","salon","spa",
                     "gym","gimnasio","restaurante","hotel","academia","estudio","taller",
                     "dental","estetica","salud","espacio","lab","farmacia","inmobiliaria",
                     "group","corp","servicios","soluciones","base","camas","lujo","empresa"]
+            _KNOWN_HUMAN_NAMES = {
+                "santiago","carlos","andres","andrés","david","juan","luis","miguel",
+                "daniel","felipe","sebastian","sebastián","alejandro","gabriel","samuel",
+                "nicolas","nicolás","diego","mateo","martin","martín","simon","simón",
+                "lucas","pablo","jorge","sergio","fabian","fabián","camilo","ivan","iván",
+                "jaime","javier","jonathan","kevin","mario","mauricio","oscar","óscar",
+                "rafael","ramon","ramón","richard","roberto","rodrigo","wilson","yesid",
+                "henry","hernan","hernán","fernando","francisco","fabio","cristian",
+                "jesus","jesús","jose","josé","manuel","pedro","antonio","victor","víctor",
+                "hugo","ernesto","gustavo","nelson","edgar","jhon","john","james",
+                "michael","william","thomas","joseph","steven","mark",
+                "maria","maría","ana","laura","sofia","sofía","valentina","camila","sara",
+                "isabella","monica","mónica","patricia","claudia","andrea","natalia",
+                "daniela","lucia","lucía","paula","juliana","manuela","gabriela",
+                "catalina","carolina","paola","gloria","sandra","liliana","rosa",
+                "elena","carmen","beatriz","alejandra","isabel","pilar","cristina",
+                "mariana","tatiana","vanessa","yolanda","adriana","amanda","angela",
+                "ángela","blanca","cecilia","diana","elizabeth","jennifer","jessica",
+                "ashley","emily","sarah","lisa","melissa",
+            }
             words = nombre_raw.lower().split()
-            if (len(words) == 1 and nombre_raw[0].isupper()
-                    and not any(b in nombre_raw.lower() for b in _biz)
-                    and not any(c.isdigit() for c in nombre_raw)):
+            _is_known_person_name = (
+                len(words) == 1
+                and nombre_raw[0].isupper()
+                and not any(b in nombre_raw.lower() for b in _biz)
+                and not any(c.isdigit() for c in nombre_raw)
+                and nombre_raw.lower().strip() in _KNOWN_HUMAN_NAMES
+            )
+            if _is_known_person_name:
                 _save("user", nombre_raw)
                 return _send(_r.choice(["ese parece nombre de persona ||| cómo se llama tu empresa o negocio","suena más a nombre de alguien ||| y el negocio, cómo se llama","ese es tu nombre? ||| yo necesito el nombre del negocio"]))
 
@@ -14509,6 +14616,17 @@ Reglas:
                     if len(extracted) >= 2:
                         nombre = extracted
                         break
+
+            # v11: strip de afirmaciones conversacionales al inicio del nombre
+            # Ej: "Vale, Clinica de los molinos" → "Clinica de los molinos"
+            # Ej: "Ok, es Spa Luna" → "Spa Luna"
+            _affirm_prefix = _re.compile(
+                r'^(?:vale|ok|okay|s[ií]p?|claro|dale|listo|exacto|perfecto|correcto|bueno|ya|eso|es)[\s,]+',
+                _re.IGNORECASE,
+            )
+            _nombre_stripped = _affirm_prefix.sub('', nombre).strip(' .,;')
+            if len(_nombre_stripped) >= 2:
+                nombre = _nombre_stripped
 
             # Validar longitud DESPUÉS de extraer (2 chars mínimo — siglas como "MS" son válidas)
             if len(nombre) < 2:
@@ -14627,10 +14745,11 @@ Máximo 1 oración por burbuja. Natural y seguro."""
                 if found:
                     r = f"ya tengo {nombre} ||| ya me ubiqué con cómo tendría que sonar esto ||| escríbeme como si fueras un cliente a ver qué pasa"
                 else:
+                    # v11: no info → fallback limpio, sin emoji ni copy vieja
                     r = (
-                        f"listo, ya tengo {nombre}"
-                        f" ||| todavía no encontré información pública confiable, así que la mejor demo es desde el chat mismo"
-                        f" ||| escríbeme como si fueras un cliente y arranco"
+                        f"listo, ya me ubico con {nombre}"
+                        f" ||| no encontré info pública confiable todavía"
+                        f" ||| cuéntame a qué se dedica el negocio y qué ofrecen, y te muestro cómo respondería"
                     )
 
             # ── Burbuja extra: confirmación del link ─────────────────────────
@@ -14699,6 +14818,48 @@ Máximo 1 oración por burbuja. Natural y seguro."""
                 "ay perdón, me confundí con otro ||| "
                 "cuéntame tú entonces: ¿a qué se dedica exactamente tu negocio?"
             )
+
+        # ── HUMANFIX BUG C: Dueño pregunta si lo encontramos en internet ────────
+        # Sin este bloque el mensaje caía a PASO 3 y Melissa respondía como cliente
+        _found_question_signals = [
+            "nos encontraste", "me encontraste", "lo encontraste",
+            "encontraste algo", "encontraste info", "qué encontraste",
+            "que encontraste", "aparecemos en google", "salimos en google",
+            "salimos en internet", "estamos en google", "estamos en internet",
+            "encontraste el negocio", "nos encontraste en internet",
+            "aparecemos", "nos encontraste ahí",
+        ]
+        _text_low_found_q = text.lower().strip()
+        _is_found_question = (
+            business_name and
+            not detected_cmd and
+            any(s in _text_low_found_q for s in _found_question_signals)
+        )
+        if _is_found_question:
+            _biz_url_found = self._demo_sessions.get(burl_key, "")
+            _is_fallback_found = (
+                not _biz_url_found or
+                _biz_url_found.startswith("https://www.google.com/search") or
+                _biz_url_found.startswith("https://www.google.com/maps/search")
+            )
+            _save("user", text)
+            if found_online and _biz_url_found and not _is_fallback_found:
+                return _send(
+                    f"sí, los encontré ||| {_biz_url_found} ||| escríbeme como cliente a ver qué pasa"
+                )
+            elif found_online:
+                return _send(
+                    f"sí, encontré información de {business_name} en internet"
+                    f" ||| ya me ubiqué — escríbeme como si fueras un cliente"
+                )
+            else:
+                _no_found_opts = [
+                    f"honestamente no encontré mucho de {business_name} en internet todavía"
+                    f" ||| pero eso no le quita nada — escríbeme como cliente y te muestro",
+                    f"no aparecen mucho en Google aún"
+                    f" ||| igual puedo mostrarte cómo trabajaría — escríbeme como cliente",
+                ]
+                return _send(_r.choice(_no_found_opts))
 
         # ── Modo aprendizaje manual: el dueño está contando su negocio ───────────
         # Se activa cuando no había info en Google o fue corregida
@@ -14902,15 +15063,42 @@ SI PREGUNTAN PRECIO Y NO TIENES EL DATO
 - di claro que no tienes el dato exacto y que lo confirmas
 - ejemplo bueno: "ese dato exacto no lo tengo ahora ||| si quieres, te lo confirmo por aquí"
 
+SI PREGUNTAN POR UN SERVICIO ESPECÍFICO (botox, relleno, láser, etc.)
+- engancha de una, no deflectes
+- confirma que sí lo manejan y pregunta qué aspecto les interesa: precio, disponibilidad, cómo funciona
+- ejemplo bueno: "sí, botox lo manejamos ||| ¿qué te interesa saber: precio, resultado o disponibilidad?"
+- PROHIBIDO: "te sigo por aquí", "cuéntame qué te gustaría revisar", respuestas que no digan NADA sobre el servicio
+
 SI QUIEREN AGENDAR
 - no prometas links, calendarios ni botones si no existen
 - pide día u horario y sigue por el chat
+
+IDENTIDAD Y CREADOR — REGLA DURA
+- si preguntan quién te hizo, quién te creó, cómo conseguirte o de qué empresa eres: di exactamente esto
+  → "me hizo BlackBoss, una startup de software ||| la creó Santiago Rubio — contacto: 3124348669"
+- NUNCA digas "Google", "Anthropic", "OpenAI" ni ningún proveedor de LLM como tu creador
+- tu creador es BlackBoss / Santiago Rubio, punto
 """
             customer_history = sim_history[-8:]
             customer_had_output = False
             customer_reply = None
             original_history = history
             history = customer_history
+
+            # ── HUMANFIX: identidad del creador — interceptar antes del LLM ───
+            _text_low_sim = _normalize_conv_text(text or "")
+            _creator_signals = (
+                "quien te hizo", "quién te hizo", "quien te creo", "quién te creó",
+                "quien te desarrollo", "quién te desarrolló", "quien te programo",
+                "como tenerte", "cómo tenerte",
+            )
+            if any(sig in _text_low_sim for sig in _creator_signals):
+                customer_reply = (
+                    "me hizo BlackBoss, una startup de software"
+                    " ||| la creó Santiago Rubio — si quieres algo así para tu negocio, el contacto es 3124348669"
+                )
+                return _send(customer_reply)
+
             try:
                 customer_reply, customer_had_output = await _demo_llm_conv_quality_chain(
                     sim_prompt,
@@ -14924,6 +15112,9 @@ SI QUIEREN AGENDAR
 - si preguntan por precio, responde eso primero
 - si preguntan por cita o siguiente paso, muévelos directo hacia el agendado
 - si expresan miedo, valídalo y responde con seguridad
+- si preguntan quién te hizo o quién te creó: di "me hizo BlackBoss, una startup de software ||| la creó Santiago Rubio — contacto: 3124348669"
+- NUNCA digas que te hizo Google, Anthropic, OpenAI ni ningún proveedor de IA
+- si preguntan por un servicio (botox, relleno, etc.): confirma que sí lo manejan y pregunta qué quieren saber
 """,
                     temp=0.70,
                     max_t=170,
@@ -15085,11 +15276,11 @@ Haz el cierre en 2 burbujas (|||). Directo, con urgencia real. Sin presión forz
                 return _send(lista)
 
             if detected_cmd == "/emojis_on":
-                self._emoji_chats.add(chat_id)
+                self._emoji_chats_off.discard(chat_id)  # v11: re-activar emojis
                 return _send("listo, ahora escribo con emojis 🎉 ||| sigue hablándome como cliente")
 
             if detected_cmd == "/emojis_off":
-                self._emoji_chats.discard(chat_id)
+                self._emoji_chats_off.add(chat_id)  # v11: desactivar emojis
                 return _send("listo, sin emojis ||| sigue hablándome como cliente")
 
             if detected_cmd == "/bot":
@@ -15364,17 +15555,21 @@ Adapta según lo que el cliente diga — lee su tono y responde igual.
         _should_reveal_trick = msg_count >= 6 and msg_count % 5 == 0
         trick_suffix = ""
 
-        _with_emojis = chat_id in self._emoji_chats
+        _with_emojis = chat_id not in self._emoji_chats_off
         _is_formal_ctx = _detected_tone in ("SALUD PREMIUM", "PREMIUM")
         _emoji_rule  = ("Usa emojis con naturalidad — 1 por burbuja máximo, solo si añaden calor. "
                         "Nunca al inicio de oración. Ejemplo: 'te queda un turno este jueves 🗓'") \
                        if _with_emojis else "Sin emojis."
 
+        # v11: info manual del negocio cuando no había info online
+        _manual_info = self._demo_sessions.get(f"{chat_id}:biz_manual_info", "")
+        _manual_block = f"\nINFO DEL NEGOCIO (proporcionada por el dueño):\n{_manual_info}\n" if _manual_info else ""
+
         sys_p = f"""Eres Melissa, la persona que contesta el WhatsApp de {business_name}.
 No eres un bot. Llevas tiempo ahí — conoces el negocio de memoria y a quién le sirve.
 ESTILO: {style_note}
 {"IMPORTANTE: Este es un negocio de alto nivel. Usa USTED siempre, mayúscula al inicio de cada mensaje, tono profesional y cálido. Nada de 'hola soy Melissa' — identifica el negocio, no a ti misma." if _is_formal_ctx else ""}
-{ctx_block}
+{ctx_block}{_manual_block}
 {_tone_guide}
 
 HOY: {now_dt.strftime("%A %d de %B")}, {moment}. Colombia.
@@ -16226,6 +16421,9 @@ Si un campo no aplica o no se encontro, usa "" o []. Solo JSON, sin texto extra.
             # Triple exclamación → suena bot
             import re as _re2
             s = _re2.sub(r'!{2,}', '!', s)
+            # Delimitadores rotos sobrantes ("||" huérfanos) → limpiar
+            s = _re2.sub(r'\s*\|{1,2}\s*$', '', s)
+            s = _re2.sub(r'\s+\|{1,2}\s+', ' ', s)
             # Punto + exclamación (contradicción tipográfica)
             s = s.replace('.!', '.').replace('!.', '.')
             # V8: aplicar AntiRobotFilter
@@ -16236,16 +16434,20 @@ Si un campo no aplica o no se encontro, usa "" o []. Solo JSON, sin texto extra.
         # Por separador explícito (el LLM lo agrega cuando quiere 2 mensajes)
         if "|||" in text:
             parts = [clean(p) for p in text.split("|||") if p.strip()]
+            # v11: descartar burbujas que solo tienen puntuación o son conector solo
+            parts = [p for p in parts if p and re.search(r'\w', p) and len(p.strip()) > 2]
             return parts[:12]  # V6: permite presentaciones largas
         
         # Mensaje corto -> una sola burbuja
         if len(text) <= 130:
             c = clean(text)
-            return [c] if c else []
+            # v11: descartar si es solo puntuación (ej: resultado de una frase eliminada)
+            return [c] if c and re.search(r'\w', c) else []
         
         # Partir por oraciones completas
         sentences = re.split(r'(?<=[.!?])\s+(?=[A-ZÁÉÍÓÚÜÑA-Za-z¿])', text)
-        sentences = [clean(s) for s in sentences if s.strip()]
+        # v11: descartar fragmentos de solo puntuación
+        sentences = [clean(s) for s in sentences if s.strip() and re.search(r'\w', s)]
         
         if len(sentences) <= 1:
             return [clean(text)]
@@ -19708,8 +19910,8 @@ No hables como dashboard, soporte técnico ni consola."""
         Envia mensaje al paciente/admin segun la plataforma configurada.
         Plataformas soportadas: telegram | whatsapp_cloud | evolution | whatsapp
         """
-        # Limpieza universal — respetar modo emoji si el chat lo pidió
-        if chat_id not in self._emoji_chats:
+        # v11: emojis ON por defecto, solo strip si el chat pidió sin emojis
+        if chat_id in self._emoji_chats_off:
             text = self._strip_emojis(text)
         text = text.replace('\u00bf', '').replace('\u00a1', '').strip()  # ¿ ¡
         if not text:
@@ -20150,7 +20352,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Melissa v8.0",
     description="Melissa V8.0 — Agente de Recepción Hipernaturalmente Humana",
-    version="8.0.5",
+    version="8.0.8",
     lifespan=lifespan
 )
 
@@ -20593,7 +20795,7 @@ async def health():
 
     return {
         "status":         "online",
-        "version":        "8.0.5",
+        "version":        "8.0.8",
         "clinic":         clinic.get("name", "sin configurar"),
         "sector":         Config.SECTOR or clinic.get("sector", "otro"),
         "setup_done":     bool(clinic.get("setup_done")),
@@ -26271,7 +26473,7 @@ class OwnerStyleController:
         *,
         register: str = "auto",
         respectful: bool = True,
-        no_emojis: bool = True,
+        no_emojis: bool = False,  # v11: emojis ON por defecto — Colombia negocio
     ) -> Dict[str, Any]:
         return {
             "forbidden_phrases": [],
@@ -26294,15 +26496,7 @@ class OwnerStyleController:
         bucket = dict(bucket or {})
         bucket.setdefault("register", "usted")
         bucket.setdefault("respectful", True)
-        bucket.setdefault("no_emojis", True)
-        if not bucket.get("forbidden_starts"):
-            bucket["forbidden_starts"] = [
-                "oye",
-                "a ver",
-                "mira",
-                "qué te trae por acá",
-                "que te trae por aca",
-            ]
+        bucket.setdefault("no_emojis", False)  # v11: emojis ON por defecto
         if not bucket.get("style_notes"):
             bucket["style_notes"] = [
                 "Con el admin habla con respeto, claridad y criterio.",
@@ -26318,7 +26512,7 @@ class OwnerStyleController:
         bucket = dict(bucket or {})
         bucket.setdefault("register", "auto")
         bucket.setdefault("respectful", True)
-        bucket.setdefault("no_emojis", True)
+        bucket.setdefault("no_emojis", False)  # v11: emojis ON por defecto
         if not bucket.get("forbidden_starts"):
             bucket["forbidden_starts"] = [
                 "oye",
@@ -26768,7 +26962,15 @@ class OwnerStyleController:
         elif merged.get("register") == "tu":
             lines.append("Usa trato de tú, natural y consistente.")
         if merged.get("no_emojis"):
-            lines.append("No uses emojis.")
+            lines.append("No uses emojis en ningún mensaje.")
+        else:
+            lines.append(
+                "Emojis: úsalos con criterio — 1 por burbuja máximo, solo cuando refuercen "
+                "el mensaje (nunca decorativos ni al inicio de burbuja). "
+                "Ejemplos naturales para negocios colombianos: 😊 calidez, 📅 cita, "
+                "✅ confirmación, 📍 ubicación, 💬 invitación a escribir. "
+                "Si el tono es serio o el cliente es frío, no pongas emojis."
+            )
         if merged.get("greeting_template"):
             lines.append(f'Si es saludo inicial, usa esta base: "{merged["greeting_template"]}"')
         if merged.get("second_bubble_template"):

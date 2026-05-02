@@ -1,9 +1,9 @@
 {
   "name": "melissa-ai",
-  "version": "8.0.5",
+  "version": "8.0.8",
   "description": "Open-source CLI and runtime for building Melissa AI receptionist agents on WhatsApp and Telegram.",
   "license": "MIT",
-  "author": "Black Boss",
+  "author": "Santiago Rubio",
   "homepage": "https://github.com/sxrubyo/melissa#readme",
   "repository": {
     "type": "git",
@@ -16,9 +16,13 @@
     "melissa": "npm/melissa.js"
   },
   "files": [
+    "npm/melissa.js",
     "melissa",
     "melissa.py",
     "melissa_cli.py",
+    "melissa_cli_bb.py",
+    "melissa_tui.py",
+    "melissa_sync_fix.py",
     "melissa_brain_v10.py",
     "melissa_domino.py",
     "melissa_pairing.py",
@@ -31,15 +35,13 @@
     "README.md",
     "LICENSE",
     "install.sh",
-    "melissa_core/*.py",
-    "melissa_agents/*.py",
-    "melissa_integrations/*.py",
-    "melissa_skills/*.py",
+    "package.json",
+    "melissa_core/**/*.py",
+    "melissa_agents/**/*.py",
+    "melissa_integrations/**/*.py",
+    "melissa_skills/**/*.py",
     "personas/melissa/base/*.yaml",
-    "v7/*.py",
-    "v7/agents/*.py",
-    "v7/memory/*.py",
-    "npm/*.js"
+    "v7/**/*.py"
   ],
   "engines": {
     "node": ">=18"

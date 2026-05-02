@@ -148,6 +148,15 @@ def test_process_message_demo_mode_still_allows_auth_flow() -> None:
     assert bubbles == ["flujo auth"]
 
 
+def test_split_bubbles_cleans_orphan_pipe_delimiters() -> None:
+    module = load_melissa_module()
+    melissa = module.MelissaUltra.__new__(module.MelissaUltra)
+
+    bubbles = melissa._split_bubbles("Hola, buenas tardes ||", archetype="amigable")
+
+    assert bubbles == ["Hola, buenas tardes"]
+
+
 def test_normalize_first_patient_turn_keeps_meaningful_llm_greeting() -> None:
     module = load_melissa_module()
     generator = module.ResponseGenerator.__new__(module.ResponseGenerator)

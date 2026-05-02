@@ -597,3 +597,71 @@ def test_demo_simulation_last_resort_keeps_continuity_when_models_fully_fail() -
     assert "hola, soy melissa" not in joined
     assert "cuéntame un poco más y te voy guiando" not in joined
     assert any(token in joined for token in ("agendar", "horario", "siguiente paso", "nombre"))
+
+
+def test_demo_owner_why_name_without_business_falls_back_to_real_explanation() -> None:
+    module = load_melissa_module()
+
+    class _Engine:
+        async def complete(self, msgs, **kwargs):
+            return ("", {"provider": "fake", "model": "fake"})
+
+    runtime, _db = _build_demo_runtime(module, _Engine())
+    clinic = {"name": "Nova", "sector": "otro", "services": ["Botox"]}
+
+    result = asyncio.run(
+        runtime._handle_demo_message("owner_why_1", "para que quieres el nombre de mi negocio?", clinic)
+    )
+
+    joined = " ".join(result).lower()
+    assert "tono" in joined or "contexto" in joined
+    assert "demo" in joined
+    assert "pásame el nombre de tu negocio" not in joined
+
+
+def test_demo_customer_simulation_rejects_hoy_fragment_and_repairs_greeting() -> None:
+    module = load_melissa_module()
+
+    class _Engine:
+        def __init__(self) -> None:
+            self.customer_calls = 0
+
+        async def complete(self, msgs, **kwargs):
+            user = msgs[-1]["content"]
+            system = msgs[0]["content"]
+            if user.startswith("negocio: "):
+                return (
+                    "ya tengo Clínica América ||| ya me ubiqué con cómo tendría que sonar esto ||| escríbeme como si fueras un cliente",
+                    {"provider": "fake", "model": "fake"},
+                )
+            if "ya pueden empezar la demo" in system:
+                return (
+                    "de una ||| escríbeme como si fueras un cliente real y yo ya caigo en el chat",
+                    {"provider": "fake", "model": "fake"},
+                )
+            if "Ya están en plena conversación con una persona interesada" in system:
+                self.customer_calls += 1
+                if self.customer_calls == 1:
+                    return (
+                        "Hola, buenas tardes. Soy Melissa de Clínica América ||| hoy?",
+                        {"provider": "fake", "model": "fake"},
+                    )
+                return (
+                    "hola, Melissa por acá en Clínica América ||| cuéntame qué te gustaría revisar",
+                    {"provider": "fake", "model": "fake"},
+                )
+            return ("ok ||| sigo", {"provider": "fake", "model": "fake"})
+
+    engine = _Engine()
+    runtime, _db = _build_demo_runtime(module, engine)
+    clinic = {"name": "Nova", "sector": "otro", "services": ["Botox"]}
+
+    asyncio.run(runtime._handle_demo_message("owner_hoy_1", "mi negocio se llama Clinica America", clinic))
+    asyncio.run(runtime._handle_demo_message("owner_hoy_1", "vale hagamos una demo entonces", clinic))
+    result = asyncio.run(runtime._handle_demo_message("owner_hoy_1", "hola buenas tardes", clinic))
+
+    joined = " ".join(result).lower()
+    assert engine.customer_calls >= 2
+    assert "hoy?" not in joined
+    assert "melissa" in joined
+    assert "revisar" in joined
