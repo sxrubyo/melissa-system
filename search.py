@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import os
 import re
@@ -24,10 +25,62 @@ import httpx
 
 log = logging.getLogger("melissa.search")
 
+
+def _split_env_values(raw) -> List[str]:
+    if not raw:
+        return []
+    if isinstance(raw, (list, tuple, set)):
+        values = [str(x).strip() for x in raw if str(x).strip()]
+    else:
+        text = str(raw).strip()
+        if not text:
+            return []
+        parsed = None
+        if text.startswith("["):
+            try:
+                parsed = json.loads(text)
+            except Exception:
+                parsed = None
+        if isinstance(parsed, list):
+            values = [str(x).strip() for x in parsed if str(x).strip()]
+        else:
+            values = [part.strip() for part in re.split(r"[\n,]+", text) if part.strip()]
+    deduped: List[str] = []
+    seen = set()
+    for value in values:
+        if value not in seen:
+            deduped.append(value)
+            seen.add(value)
+    return deduped
+
+
+def _collect_env_series(base_name: str) -> List[str]:
+    pattern = re.compile(rf"^{re.escape(base_name)}(?:_(\d+))?$")
+    ranked: List[Tuple[int, str]] = []
+    for env_name, env_value in os.environ.items():
+        match = pattern.match(env_name)
+        if not match:
+            continue
+        rank = int(match.group(1) or 1)
+        for value in _split_env_values(env_value):
+            ranked.append((rank, value))
+    ranked.sort(key=lambda item: item[0])
+    ordered = [value for _, value in ranked]
+    ordered.extend(_split_env_values(os.getenv(f"{base_name}S", "")))
+    ordered.extend(_split_env_values(os.getenv(f"{base_name}_LIST", "")))
+    deduped: List[str] = []
+    seen = set()
+    for value in ordered:
+        if value and value not in seen:
+            deduped.append(value)
+            seen.add(value)
+    return deduped
+
 # ─── API Keys ────────────────────────────────────────────────────────────────
 SERP_API_KEY  = os.getenv("SERP_API_KEY",  "")
 BRAVE_API_KEY = os.getenv("BRAVE_API_KEY", "")
 APIFY_API_KEY = os.getenv("APIFY_API_KEY", "")
+APIFY_API_KEYS = _collect_env_series("APIFY_API_KEY")
 
 # ─── Cache en memoria ────────────────────────────────────────────────────────
 _search_cache: Dict[str, Tuple[str, float]] = {}
@@ -163,32 +216,37 @@ async def brave_search(query: str, count: int = 5) -> List[Dict]:
 # ─── Apify (fallback de emergencia) ─────────────────────────────────────────
 
 async def apify_search(query: str, count: int = 5) -> List[Dict]:
-    if not APIFY_API_KEY:
+    api_keys = APIFY_API_KEYS or ([APIFY_API_KEY] if APIFY_API_KEY else [])
+    if not api_keys:
         return []
-    try:
-        async with httpx.AsyncClient(timeout=25.0) as client:
-            r = await client.post(
-                "https://api.apify.com/v2/acts/apify~google-search-scraper/run-sync-get-dataset-items",
-                headers={"Authorization": f"Bearer {APIFY_API_KEY}"},
-                json={"queries": query, "maxPagesPerQuery": 1,
-                      "resultsPerPage": count, "languageCode": "es", "countryCode": "co"},
-                params={"timeout": 20, "memory": 256},
-            )
-            items = r.json()
-            if not items or not isinstance(items, list):
-                return []
-            results = []
-            for item in items[:1]:
-                for res in item.get("organicResults", [])[:count]:
-                    if res.get("description"):
-                        results.append({"title": res.get("title", ""),
-                                        "url": res.get("url", ""),
-                                        "description": res["description"],
-                                        "source": "apify"})
-            return results
-    except Exception as e:
-        log.warning(f"[apify] error: {e}")
-        return []
+    for api_key in api_keys:
+        try:
+            async with httpx.AsyncClient(timeout=25.0) as client:
+                r = await client.post(
+                    "https://api.apify.com/v2/acts/apify~google-search-scraper/run-sync-get-dataset-items",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    json={"queries": query, "maxPagesPerQuery": 1,
+                          "resultsPerPage": count, "languageCode": "es", "countryCode": "co"},
+                    params={"timeout": 20, "memory": 256},
+                )
+                r.raise_for_status()
+                items = r.json()
+                if not items or not isinstance(items, list):
+                    continue
+                results = []
+                for item in items[:1]:
+                    for res in item.get("organicResults", [])[:count]:
+                        if res.get("description"):
+                            results.append({"title": res.get("title", ""),
+                                            "url": res.get("url", ""),
+                                            "description": res["description"],
+                                            "source": "apify"})
+                if results:
+                    return results
+        except Exception as e:
+            log.warning(f"[apify] error: {e}")
+            continue
+    return []
 
 
 # ─── Motor unificado con fallback automatico ─────────────────────────────────

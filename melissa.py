@@ -2967,6 +2967,59 @@ def _parse_admin_ids(raw) -> list:
             return []
     return []
 
+
+def _split_env_values(raw) -> list:
+    """Divide una variable de entorno tipo lista en valores útiles, preservando orden."""
+    if not raw:
+        return []
+    if isinstance(raw, (list, tuple, set)):
+        values = [str(x).strip() for x in raw if str(x).strip()]
+    else:
+        text = str(raw).strip()
+        if not text:
+            return []
+        parsed = None
+        if text.startswith("["):
+            try:
+                parsed = json.loads(text)
+            except Exception:
+                parsed = None
+        if isinstance(parsed, list):
+            values = [str(x).strip() for x in parsed if str(x).strip()]
+        else:
+            values = [part.strip() for part in re.split(r"[\n,]+", text) if part.strip()]
+    deduped = []
+    seen = set()
+    for value in values:
+        if value not in seen:
+            deduped.append(value)
+            seen.add(value)
+    return deduped
+
+
+def _collect_env_series(base_name: str, *extra_names: str) -> list:
+    """Recolecta BASE, BASE_2..BASE_N y también listas BASES/BASE_LIST."""
+    pattern = re.compile(rf"^{re.escape(base_name)}(?:_(\d+))?$")
+    ranked = []
+    for env_name, env_value in os.environ.items():
+        match = pattern.match(env_name)
+        if not match:
+            continue
+        rank = int(match.group(1) or 1)
+        for value in _split_env_values(env_value):
+            ranked.append((rank, value))
+    ranked.sort(key=lambda item: item[0])
+    ordered = [value for _, value in ranked]
+    for alias in extra_names or (f"{base_name}S", f"{base_name}_LIST"):
+        ordered.extend(_split_env_values(os.getenv(alias, "")))
+    deduped = []
+    seen = set()
+    for value in ordered:
+        if value and value not in seen:
+            deduped.append(value)
+            seen.add(value)
+    return deduped
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # CONFIGURACIÓN GLOBAL AVANZADA
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2988,6 +3041,7 @@ class Config:
     GEMINI_API_KEY_4   = os.getenv("GEMINI_API_KEY_4", "")
     GEMINI_API_KEY_5   = os.getenv("GEMINI_API_KEY_5", "")
     GEMINI_API_KEY_6   = os.getenv("GEMINI_API_KEY_6", "")
+    GEMINI_API_KEYS    = _collect_env_series("GEMINI_API_KEY")
 
     # OpenRouter — acceso a todos los modelos (prioridad 5)
     OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
@@ -3001,6 +3055,7 @@ class Config:
     # ── APIs de búsqueda ──────────────────────────────────────────────────────
     BRAVE_API_KEY      = os.getenv("BRAVE_API_KEY", "")
     APIFY_API_KEY      = os.getenv("APIFY_API_KEY", "")
+    APIFY_API_KEYS     = _collect_env_series("APIFY_API_KEY")
     SERP_API_KEY       = os.getenv("SERP_API_KEY", "")
 
     # ── Calendario ────────────────────────────────────────────────────────────
@@ -4222,7 +4277,6 @@ class AntiRobotFilter:
         "para mí es un placer", "es un placer atenderte",
         "estamos a tu disposición", "estamos a su disposición",
         "te deseo un excelente día", "que tengas un buen día",
-        "buen día", "buena tarde", "buena noche",
         "que necesitas?", "cuéntame que necesitas",
         "dime que necesitas", "en que te puedo ayudar?",
         "cómo te puedo ayudar?", "cómo le puedo ayudar?",
@@ -7446,7 +7500,7 @@ class LLMEngine:
         if Config.GROQ_API_KEY:
             self.providers.append(GroqProvider(Config.GROQ_API_KEY))
             log.info("[llm] Groq OK")
-        _all_gemini_keys = [
+        _all_gemini_keys = Config.GEMINI_API_KEYS or [
             Config.GEMINI_API_KEY,   Config.GEMINI_API_KEY_2,
             Config.GEMINI_API_KEY_3, Config.GEMINI_API_KEY_4,
             Config.GEMINI_API_KEY_5, Config.GEMINI_API_KEY_6,
@@ -10625,6 +10679,7 @@ class WebSearchEngine:
             log.info("[search] search.py no encontrado, usando motor interno")
         self.brave_key = Config.BRAVE_API_KEY
         self.apify_key = Config.APIFY_API_KEY
+        self.apify_keys = Config.APIFY_API_KEYS or ([self.apify_key] if self.apify_key else [])
         self.serp_key  = Config.SERP_API_KEY
 
     async def search(self, query: str, context: str = "") -> str:
@@ -10670,7 +10725,7 @@ class WebSearchEngine:
                 return result
 
         # Apify
-        if self.apify_key:
+        if self.apify_keys:
             return await self._apify_search(full_query)
 
         return ""
@@ -10717,40 +10772,218 @@ class WebSearchEngine:
             return ""
 
     async def _apify_search(self, query: str) -> str:
-        if not self.apify_key:
+        if not self.apify_keys:
             return ""
-        try:
-            async with httpx.AsyncClient(timeout=25.0) as client:
-                r = await client.post(
-                    "https://api.apify.com/v2/acts/apify~google-search-scraper/run-sync-get-dataset-items",
-                    headers={"Authorization": f"Bearer {self.apify_key}"},
-                    json={"queries": query, "maxPagesPerQuery": 1,
-                          "resultsPerPage": 5, "languageCode": "es", "countryCode": "co"},
-                    params={"timeout": 20, "memory": 256},
-                )
-                items = r.json()
-                if not items or not isinstance(items, list):
-                    return ""
-                snippets = []
-                for item in items[:1]:
-                    for res in item.get("organicResults", [])[:5]:
-                        if res.get("description"):
-                            snippets.append(res["description"])
-                return " ".join(snippets)[:1200]
-        except Exception as e:
-            log.warning(f"Apify search error: {e}")
-            return ""
+        for apify_key in self.apify_keys:
+            try:
+                async with httpx.AsyncClient(timeout=25.0) as client:
+                    r = await client.post(
+                        "https://api.apify.com/v2/acts/apify~google-search-scraper/run-sync-get-dataset-items",
+                        headers={"Authorization": f"Bearer {apify_key}"},
+                        json={"queries": query, "maxPagesPerQuery": 1,
+                              "resultsPerPage": 5, "languageCode": "es", "countryCode": "co"},
+                        params={"timeout": 20, "memory": 256},
+                    )
+                    r.raise_for_status()
+                    items = r.json()
+                    if not items or not isinstance(items, list):
+                        continue
+                    snippets = []
+                    for item in items[:1]:
+                        for res in item.get("organicResults", [])[:5]:
+                            if res.get("description"):
+                                snippets.append(res["description"])
+                    if snippets:
+                        return " ".join(snippets)[:1200]
+            except Exception as e:
+                log.warning(f"Apify search error: {e}")
+                continue
+        return ""
 
-    async def search_business_link(self, nombre: str) -> tuple:
+    async def _apify_search_candidates(self, query: str, count: int = 5) -> List[Dict]:
+        if not self.apify_keys:
+            return []
+        for apify_key in self.apify_keys:
+            try:
+                async with httpx.AsyncClient(timeout=25.0) as client:
+                    r = await client.post(
+                        "https://api.apify.com/v2/acts/apify~google-search-scraper/run-sync-get-dataset-items",
+                        headers={"Authorization": f"Bearer {apify_key}"},
+                        json={
+                            "queries": query,
+                            "maxPagesPerQuery": 1,
+                            "resultsPerPage": count,
+                            "languageCode": "es",
+                            "countryCode": "co",
+                        },
+                        params={"timeout": 20, "memory": 256},
+                    )
+                    r.raise_for_status()
+                    items = r.json()
+                    if not items or not isinstance(items, list):
+                        continue
+                    results = []
+                    for item in items[:1]:
+                        for res in item.get("organicResults", [])[:count]:
+                            results.append({
+                                "title": res.get("title", ""),
+                                "url": res.get("url", ""),
+                                "description": res.get("description", ""),
+                            })
+                    if results:
+                        return results
+            except Exception as e:
+                log.warning(f"Apify candidate search error: {e}")
+                continue
+        return []
+
+    async def search_business_link(self, nombre: str, excluded_urls: Optional[set] = None) -> tuple:
         """
         Busca un negocio y devuelve (snippet_text, url).
         Prioridad: Google Maps → website oficial → primer organic result.
         """
+        from urllib.parse import urlparse
+
         nombre_clean = " ".join(str(nombre or "").split()).strip()
         nombre_norm = _normalize_conv_text(nombre_clean)
         query = nombre_clean if "colombia" in nombre_norm else f"{nombre_clean} Colombia"
+        excluded = {u for u in (excluded_urls or set()) if u}
+        apify_keys = getattr(self, "apify_keys", None) or ([getattr(self, "apify_key", "")] if getattr(self, "apify_key", "") else [])
         url   = ""
         text  = ""
+        skip = [
+            "facebook.com/pages","facebook.com/p/","facebook.com/profile",
+            "amarillasinternet","paginasamarillas","directorio",
+            "yelp","foursquare","tripadvisor","cylex","infobel",
+            "clinicasesteticas.com","bookimed.com","doctoralia","topdoctors",
+            "treatwell","multiestetica","medicosdoc",
+        ]
+        bad_social_fragments = ("/reel/", "/p/", "/tv/", "facebook.com/reel", "facebook.com/watch")
+        directory_markers = (
+            "doctores de", "mejores especialistas", "encuentre los mejores",
+            "cerca de", "top ", "ranking", "listado", "centros de",
+            "clinicasesteticas", "bookimed", "doctoralia", "top doctors",
+        )
+        generic_tokens = {
+            "clinica", "clinicas", "clinic", "hospital", "centro", "centros", "medicina",
+            "medico", "medicos", "medica", "medicas", "estetica", "estetico", "esteticos",
+            "spa", "salud", "medical", "colombia", "medellin", "medellín", "bogota",
+            "bogotá", "consultorio", "ips", "sas", "sede", "oficial", "instagram",
+            "servicios", "servicio", "grupo", "empresa", "negocio", "esteticos", "esteticas",
+        }
+        name_tokens = [
+            tok for tok in re.findall(r"[a-z0-9áéíóúüñ]+", nombre_norm)
+            if len(tok) >= 3
+        ]
+        strong_tokens = [tok for tok in name_tokens if tok not in generic_tokens]
+
+        anchor_families = {
+            "clinica": ("clinica", "clinic"),
+            "hospital": ("hospital",),
+            "dental": ("dental", "odont", "odontologia", "odontológica", "odontologica"),
+            "laboratorio": ("laboratorio", "laboratories", "lab"),
+        }
+
+        required_anchor = None
+        for anchor_name, variants in anchor_families.items():
+            if any(variant in nombre_norm for variant in variants):
+                required_anchor = (anchor_name, variants)
+                break
+
+        candidates: List[Dict[str, Any]] = []
+
+        def _accept_url(candidate: str) -> bool:
+            if not candidate:
+                return False
+            if any(s in candidate for s in skip):
+                return False
+            if any(fragment in candidate for fragment in bad_social_fragments):
+                return False
+            if candidate in excluded:
+                return False
+            return True
+
+        def _norm_join(*parts: str) -> str:
+            return _normalize_conv_text(" ".join(part for part in parts if part))
+
+        def _register_candidate(source: str, candidate_url: str, title: str = "", description: str = "") -> None:
+            if not _accept_url(candidate_url):
+                return
+            candidates.append({
+                "source": source,
+                "url": candidate_url,
+                "title": title or "",
+                "description": description or "",
+            })
+
+        def _candidate_score(candidate: Dict[str, Any]) -> Optional[int]:
+            candidate_url = candidate.get("url", "") or ""
+            title = candidate.get("title", "") or ""
+            description = candidate.get("description", "") or ""
+            haystack = _norm_join(title, description, candidate_url)
+            title_url_haystack = _norm_join(title, candidate_url)
+            domain = _normalize_conv_text(urlparse(candidate_url).netloc or "")
+
+            if required_anchor and not any(variant in title_url_haystack for variant in required_anchor[1]):
+                return None
+
+            exact_name = bool(nombre_norm and nombre_norm in haystack)
+            matched_name_tokens = [tok for tok in name_tokens if tok in haystack]
+            matched_strong_tokens = [tok for tok in strong_tokens if tok in haystack]
+            title_strong_tokens = [tok for tok in strong_tokens if tok in title_url_haystack]
+            domain_strong_tokens = [tok for tok in strong_tokens if tok in domain]
+
+            if strong_tokens:
+                if not exact_name and not title_strong_tokens and not domain_strong_tokens:
+                    return None
+            elif len(matched_name_tokens) < 2 and not exact_name:
+                return None
+
+            if any(marker in haystack for marker in directory_markers) and not exact_name:
+                return None
+
+            source_bonus = {
+                "local_maps": 10,
+                "local_website": 7,
+                "knowledge_graph": 6,
+                "organic": 2,
+                "brave": 1,
+                "apify": 1,
+            }.get(candidate.get("source", ""), 0)
+
+            score = source_bonus
+            score += 6 if exact_name else 0
+            score += len(title_strong_tokens) * 4
+            score += len(domain_strong_tokens) * 3
+            score += len(matched_strong_tokens) * 1
+            score += min(len(matched_name_tokens), 3)
+
+            if "instagram.com" in candidate_url or "facebook.com" in candidate_url:
+                score -= 2
+                if not title_strong_tokens and not domain_strong_tokens:
+                    return None
+
+            if strong_tokens and len(strong_tokens) == 1 and required_anchor is None:
+                lone_token = strong_tokens[0]
+                if lone_token in description.lower() and lone_token not in title_url_haystack and lone_token not in domain:
+                    return None
+
+            return score
+
+        def _select_best_candidate() -> Optional[Dict[str, Any]]:
+            scored: List[Tuple[int, Dict[str, Any]]] = []
+            for candidate in candidates:
+                score = _candidate_score(candidate)
+                if score is None:
+                    continue
+                scored.append((score, candidate))
+            if not scored:
+                return None
+            scored.sort(key=lambda item: item[0], reverse=True)
+            best_score, best_candidate = scored[0]
+            if best_score < 5:
+                return None
+            return best_candidate
 
         # ── SerpAPI: Maps + Knowledge Graph + Organic ─────────────────────────
         if self.serp_key:
@@ -10773,62 +11006,48 @@ class WebSearchEngine:
                         local_places = []
                     first_local = local_places[0] if local_places and isinstance(local_places[0], dict) else {}
 
-                    # 1. Local results → Google Maps link (más confiable para negocios locales)
                     if first_local:
                         maps_link = (first_local.get("links", {}).get("directions")
                                      or first_local.get("place_id_search")
                                      or "")
                         website   = first_local.get("links", {}).get("website", "")
-                        # Preferir Maps sobre website para que el dueño reconozca su negocio
-                        url = maps_link or website
-
-                    # 2. Knowledge graph: website o Maps
-                    if not url:
-                        kg  = data.get("knowledge_graph", {})
-                        local_map = data.get("local_map") or {}
-                        url = (kg.get("website") or kg.get("local_map", "") or local_map.get("link", "") or "")
-
-                    # 3. Primer organic result (saltar directorios)
-                    if not url:
-                        skip = ["facebook.com/pages","facebook.com/p/","facebook.com/profile",
-                                "amarillasinternet","paginasamarillas","directorio",
-                                "yelp","foursquare","tripadvisor","cylex","infobel"]
-                        for res in data.get("organic_results", []):
-                            link = res.get("link", "")
-                            if link and not any(s in link for s in skip):
-                                url = link
-                                break
-
-                    # Texto para el contexto
-                    parts = []
-                    ab = data.get("answer_box", {})
-                    if ab:
-                        s = ab.get("answer") or ab.get("snippet") or ""
-                        if s: parts.append(s.strip()[:400])
-                    if first_local:
                         title = first_local.get("title", "")
                         biz_type = first_local.get("type", "")
                         addr = first_local.get("address", "")
                         rating = first_local.get("rating", "")
-                        website = first_local.get("links", {}).get("website", "")
-                        if title:
-                            parts.append(f"Negocio: {title}")
+                        local_desc_parts = []
                         if biz_type:
-                            parts.append(f"Tipo: {biz_type}")
-                        if addr: parts.append(f"Dirección: {addr}")
-                        if rating: parts.append(f"Rating: {rating}")
-                        if website:
-                            parts.append(f"Sitio: {website}")
-                    for res in data.get("organic_results", [])[:3]:
-                        if res.get("snippet"):
-                            parts.append(res["snippet"][:200])
-                    text = "\n".join(parts)[:800]
+                            local_desc_parts.append(f"Tipo: {biz_type}")
+                        if addr:
+                            local_desc_parts.append(f"Dirección: {addr}")
+                        if rating:
+                            local_desc_parts.append(f"Rating: {rating}")
+                        local_desc = " | ".join(local_desc_parts)
+                        _register_candidate("local_maps", maps_link, title, local_desc)
+                        _register_candidate("local_website", website, title, local_desc)
+
+                    kg  = data.get("knowledge_graph", {})
+                    local_map = data.get("local_map") or {}
+                    candidate_url = (kg.get("website") or kg.get("local_map", "") or local_map.get("link", "") or "")
+                    _register_candidate(
+                        "knowledge_graph",
+                        candidate_url,
+                        kg.get("title", ""),
+                        kg.get("description", ""),
+                    )
+
+                    for res in data.get("organic_results", [])[:5]:
+                        _register_candidate(
+                            "organic",
+                            res.get("link", ""),
+                            res.get("title", ""),
+                            res.get("snippet", ""),
+                        )
 
             except Exception as e:
                 log.warning(f"[search_link] SerpAPI error: {e}")
 
-        # ── Brave: fallback si no hay SerpAPI ─────────────────────────────────
-        if not url and self.brave_key:
+        if self.brave_key:
             try:
                 async with httpx.AsyncClient(timeout=10.0) as client:
                     r = await client.get(
@@ -10839,22 +11058,46 @@ class WebSearchEngine:
                     )
                     r.raise_for_status()
                     results = r.json().get("web", {}).get("results", [])
-                    skip = ["facebook.com/pages","facebook.com/p/","facebook.com/profile",
-                             "amarillasinternet","paginasamarillas","directorio","cylex","infobel"]
-                    for res in results:
-                        u = res.get("url", "")
-                        if u and not any(s in u for s in skip):
-                            url = u
-                            break
-                    snippets = [res.get("description","") for res in results if res.get("description")]
-                    text = " ".join(snippets)[:800]
+                    for res in results[:5]:
+                        _register_candidate(
+                            "brave",
+                            res.get("url", ""),
+                            res.get("title", ""),
+                            res.get("description", ""),
+                        )
             except Exception as e:
                 log.warning(f"[search_link] Brave error: {e}")
+
+        if apify_keys:
+            try:
+                apify_results = await self._apify_search_candidates(query, count=6)
+                for res in apify_results:
+                    _register_candidate(
+                        "apify",
+                        res.get("url", ""),
+                        res.get("title", ""),
+                        res.get("description", ""),
+                    )
+            except Exception as e:
+                log.warning(f"[search_link] Apify error: {e}")
+
+        best_candidate = _select_best_candidate()
+        if best_candidate:
+            url = best_candidate.get("url", "")
+            parts = []
+            title = (best_candidate.get("title") or "").strip()
+            description = (best_candidate.get("description") or "").strip()
+            if title:
+                parts.append(f"Negocio: {title}")
+            if description:
+                parts.append(description[:320])
+            text = "\n".join(parts)[:800]
 
         # ── Fallback: Google Maps (mucho más útil que Google Search para negocios) ──
         if not url:
             import urllib.parse
             url = f"https://www.google.com/maps/search/{urllib.parse.quote(nombre)}+Colombia"
+            text = ""
 
         return text, url
 
@@ -13567,6 +13810,26 @@ class MelissaUltra:
                 bubbles[0] = bubbles[0][0].upper() + bubbles[0][1:] if bubbles[0] else bubbles[0]
             return bubbles
 
+        def _normalize_demo_owner_onboarding_response(raw_response: str) -> str:
+            parts = [part.strip() for part in re.split(r"\s*\|\|\|\s*", raw_response or "") if part.strip()]
+            if not parts:
+                return raw_response
+            user_norm = _normalize_conv_text(text or "")
+            greeted = any(
+                user_norm == token or user_norm.startswith(token + " ")
+                for token in (
+                    "hola", "hola buenas", "buenas", "buenas tardes",
+                    "buenas noches", "buenos dias", "buenos días", "hey", "holi",
+                )
+            )
+            if greeted:
+                first_norm = _normalize_conv_text(parts[0])
+                if first_norm.startswith("soy melissa"):
+                    parts[0] = "hola, " + parts[0][0].lower() + parts[0][1:]
+                elif first_norm.startswith("melissa, "):
+                    parts[0] = "hola, " + parts[0][0].lower() + parts[0][1:]
+            return " ||| ".join(parts)
+
         # ── FIX v10: Reset check ANTES del conversation core ─────────────────────
         # Bug v9: _try_conversation_core corría primero y el LLM recibía "reset"
         # como mensaje normal → generaba respuestas incoherentes ("Hoy?", etc.)
@@ -14081,12 +14344,15 @@ class MelissaUltra:
 
         def _demo_customer_reply_is_low_quality(raw_response: Optional[str]) -> bool:
             lowered = _normalize_conv_text(raw_response or "")
+            raw_text = (raw_response or "").strip().lower()
             if not lowered:
                 return True
             if looks_fragmented_reply(raw_response or ""):
                 return True
             parts = [part.strip() for part in re.split(r"\s*\|\|\|\s*|\n+", raw_response or "") if part.strip()]
             if any(looks_fragmented_reply(part) for part in parts):
+                return True
+            if re.search(r"(?:[.!?]\s*)(hoy|y tu|y tú|que mas|qué más)\??$", raw_text):
                 return True
             safe_tail_words = {"hoy", "ahi", "ahí", "bien", "vale", "listo", "claro", "ti", "aqui", "aquí"}
             for part in parts:
@@ -14141,6 +14407,9 @@ class MelissaUltra:
                     return True
                 if any(token in lowered_resp for token in ("link", "enlace", "seleccionar una fecha", "seleccionar fecha", "calendario")):
                     return True
+            if any(token in lowered_user for token in ("audio", "audios", "nota de voz", "pdf", "archivo", "documento", "documentos", "imagen", "imagenes", "imágenes")):
+                if not any(token in lowered_resp for token in ("audio", "voz", "pdf", "documento", "imagen", "transcrib", "leer")):
+                    return True
             if "miedo" in lowered_user:
                 if not any(token in lowered_resp for token in ("miedo", "normal", "natural", "conservador", "suave")):
                     return True
@@ -14167,6 +14436,11 @@ class MelissaUltra:
                 return (
                     f"en {_biz} lo normal es arrancar viendo qué resultado quieres"
                     " ||| qué es lo que más te preocupa"
+                )
+            if any(token in _user for token in ("audio", "audios", "nota de voz", "pdf", "archivo", "documento", "documentos", "imagen", "imagenes", "imágenes")):
+                return (
+                    "sí, por aquí puedo trabajar con audios, imágenes y documentos"
+                    " ||| si quieres, mándamelo y sigo desde ahí"
                 )
             return f"cuéntame qué necesitas de {_biz}"
 
@@ -14249,11 +14523,11 @@ class MelissaUltra:
                 )
             ):
                 return (
-                    "soy Melissa, la asesora virtual que llevaría tu chat"
+                    "hola, soy Melissa, la asesora virtual que llevaría tu chat"
                     " ||| respondo clientes, filtro interesados, ubico servicios y ayudo con citas"
                     " ||| pásame el nombre de tu negocio y arranco"
                 )
-            return "soy Melissa, la asesora virtual que llevaría tu chat ||| pásame el nombre de tu negocio y arranco"
+            return "hola, soy Melissa, la asesora virtual que llevaría tu chat ||| pásame el nombre de tu negocio y arranco"
 
         async def _demo_owner_onboarding_reply(*, explain_name: bool = False, force_stage: Optional[str] = None) -> List[str]:
             user_block = text
@@ -14300,6 +14574,8 @@ REGLAS EXTRA DE ESTA DEMO:
 - si sospechan estafa o no quieren dar el nombre del negocio, baja la guardia y explica para qué lo pides sin sonar defensiva
 - nunca menciones Nova, Clínica de las Américas ni branding heredado
 - no dejes frases colgadas ni respuestas cortadas
+- si te saludan con "hola", "buenas" o parecido, abre natural con "hola, soy Melissa..." o "hola, Melissa por acá..." antes de seguir
+- puedes usar 0 o 1 emoji en toda la respuesta si suma cercanía; no es obligatorio
 
 REGLA DE ORO ANTI-CORTE (HUMANFIX):
 Cada respuesta DEBE terminar con una pregunta o invitación. NUNCA termines en afirmación seca.
@@ -14311,7 +14587,7 @@ Una respuesta de 1 sola burbuja sin "?" es una respuesta INCOMPLETA — agrégal
 
 EJEMPLOS DE RESPUESTAS BUENAS vs MALAS:
   MALO: "soy la que responde acá"
-  BUENO: "soy Melissa, la que llevaría el chat de tu negocio ||| cuéntame, cómo se llama tu empresa"
+  BUENO: "hola, soy Melissa, la que llevaría el chat de tu negocio ||| cuéntame, cómo se llama tu empresa"
 
   MALO: "la idea es que yo me encargue"
   BUENO: "la idea es que yo lleve el chat por ti — respondo clientes, filtro interesados, muevo citas ||| ¿de qué negocio es tu demo?"
@@ -14320,7 +14596,7 @@ EJEMPLOS DE RESPUESTAS BUENAS vs MALAS:
   BUENO: "me encargo de atender el chat como si fuera parte del equipo ||| cuál es el nombre de tu negocio"
 
   MALO: "soy una persona que responde en whatsapp"
-  BUENO: "soy Melissa — respondo por WhatsApp como si llevara tiempo en tu equipo ||| cómo se llama tu negocio para mostrarte cómo quedaría"
+  BUENO: "hola, soy Melissa — respondo por WhatsApp como si llevara tiempo en tu equipo ||| cómo se llama tu negocio para mostrarte cómo quedaría"
 """
             def _owner_validator(candidate: Optional[str]) -> bool:
                 lowered_candidate = _normalize_conv_text(candidate or "")
@@ -14368,20 +14644,21 @@ EJEMPLOS DE RESPUESTAS BUENAS vs MALAS:
                     explain_name=explain_name,
                     current_business_name=business_name,
                 )
+            response = _normalize_demo_owner_onboarding_response(response)
             _save("user", text)
             return _send(response)
 
         def _demo_identity_response(user_text: str, explain_name: bool = False) -> List[str]:
             import random as _rm
             intro_options = [
-                "Soy Melissa, la asesora virtual que llevaría tu chat, una IA hecha para responder y orientar sin sonar fría",
-                "Soy Melissa, la asesora virtual pensada para negocios que quieren atender bien todo el día",
-                "Soy Melissa, la asesora virtual de este tipo de chat. Soy una IA hecha para responder, orientar y sostener conversaciones con criterio",
+                "Hola, soy Melissa, la asesora virtual que llevaría tu chat, una IA hecha para responder y orientar sin sonar fría",
+                "Hola, soy Melissa, la asesora virtual pensada para negocios que quieren atender bien todo el día",
+                "Hola, soy Melissa, la asesora virtual de este tipo de chat. Soy una IA hecha para responder, orientar y sostener conversaciones con criterio",
             ]
             capability_options = [
-                "Puedo responder clientes, explicar servicios, filtrar interesados, ubicar horarios, ayudar con citas y mantener conversaciones que se sientan naturales.",
-                "Mis capacidades van desde atender preguntas y ordenar conversaciones hasta ayudar con disponibilidad, seguimiento y primer filtro comercial.",
-                "Puedo encargarme del primer contacto, resolver dudas frecuentes, mover conversaciones y dejar el chat bien llevado sin sonar rígida.",
+                "Puedo responder clientes, explicar servicios, filtrar interesados, ubicar horarios, ayudar con citas y mantener conversaciones que se sientan naturales",
+                "Puedo atender preguntas, ordenar conversaciones, ayudar con disponibilidad y hacer el primer filtro comercial sin sonar rígida",
+                "Puedo encargarme del primer contacto, resolver dudas frecuentes, mover conversaciones y dejar el chat bien llevado sin sonar seca",
             ]
             if explain_name:
                 cta_options = [
@@ -14859,15 +15136,72 @@ Máximo 1 oración por burbuja. Natural y seguro."""
             len(history) <= 6  # solo al inicio, no a mitad de conversación
         )
         if _is_correction:
+            retry_text = ""
+            retry_url = ""
+            retry_found = False
+            retry_queries = [
+                business_name,
+                f"\"{business_name}\" sitio oficial",
+                f"\"{business_name}\" instagram oficial",
+                f"\"{business_name}\" colombia",
+            ]
+            _bad_social_retry_fragments = ("/reel/", "/p/", "/tv/", "facebook.com/reel", "facebook.com/watch")
+            try:
+                for retry_query in retry_queries:
+                    retry_text, retry_url = await self.search.search_business_link(
+                        retry_query,
+                        excluded_urls={self._demo_sessions.get(burl_key, "")},
+                    )
+                    _retry_fallback_url = (
+                        retry_url.startswith("https://www.google.com/maps/search")
+                        or retry_url.startswith("https://www.google.com/search")
+                    ) if retry_url else False
+                    _retry_bad_social = any(fragment in retry_url for fragment in _bad_social_retry_fragments) if retry_url else False
+                    retry_found = bool(
+                        not _retry_bad_social and (
+                            (retry_text and len(retry_text.strip()) > 80)
+                            or (retry_url and not _retry_fallback_url)
+                        )
+                    )
+                    if retry_found:
+                        break
+            except Exception as retry_error:
+                log.warning(f"[demo] retry search after correction failed: {retry_error}")
+            _save("user", text)
+            if retry_found and retry_url:
+                self._demo_sessions[bctx_key] = retry_text
+                self._demo_sessions[bfound_key] = True
+                self._demo_sessions[burl_key] = retry_url
+                self._demo_sessions[blearn_key] = -1
+                return _send(
+                    "ay, sí, me fui por otro lado"
+                    f" ||| a ver, encontré este otro"
+                    f" ||| {retry_url}"
+                )
             # Limpiar la info incorrecta de Google y entrar en modo aprendizaje
             self._demo_sessions[bctx_key]   = ""
             self._demo_sessions[bfound_key] = False
             self._demo_sessions[blearn_key] = 0
-            _save("user", text)
             return _send(
-                "ay perdón, me confundí con otro ||| "
-                "cuéntame tú entonces: ¿a qué se dedica exactamente tu negocio?"
+                "ay perdón, me confundí con otro"
+                " ||| cuéntame tú entonces: a qué se dedica exactamente tu negocio"
             )
+
+        _is_business_name_reject = (
+            business_name
+            and not found_online
+            and not sim_mode_active
+            and any(sig in text.lower() for sig in _correction_signals)
+            and len(history) <= 6
+        )
+        if _is_business_name_reject:
+            self._demo_sessions[bname_key] = ""
+            self._demo_sessions[bctx_key] = ""
+            self._demo_sessions[bfound_key] = False
+            self._demo_sessions[burl_key] = ""
+            self._demo_sessions[blearn_key] = -1
+            _save("user", text)
+            return _send("listo, ese no era ||| pásame el nombre correcto del negocio y sigo")
 
         # ── Cambio de negocio en caliente: re-bind sin obligar a reset manual ──
         _current_business_norm = _normalize_conv_text(business_name or "")
@@ -15238,6 +15572,7 @@ IDENTIDAD Y CREADOR — REGLA DURA
 - si preguntan por precio, responde eso primero
 - si preguntan por cita o siguiente paso, muévelos directo hacia el agendado
 - si expresan miedo, valídalo y responde con seguridad
+- si preguntan si entiendes audios, notas de voz, PDFs, imágenes o documentos: responde que sí, cuando el canal lo permite, puedes transcribirlos o leerlos
 - si preguntan quién te hizo o quién te creó: di "me hizo BlackBoss, una startup de software ||| la creó Santiago Rubio — contacto: 3124348669"
 - NUNCA digas que te hizo Google, Anthropic, OpenAI ni ningún proveedor de IA
 - si preguntan por un servicio (botox, relleno, etc.): confirma que sí lo manejan y pregunta qué quieren saber
@@ -20215,7 +20550,7 @@ No hables como dashboard, soporte técnico ni consola."""
             # ── Gemini 2.0 Flash — comprensión nativa de audio ────────────────
             # Rota entre las 3 keys disponibles
             effective_mime = "audio/ogg" if mime_type in ("audio/oga","audio/opus") else mime_type
-            gemini_keys = [
+            gemini_keys = Config.GEMINI_API_KEYS or [
                 k for k in [
                     Config.GEMINI_API_KEY,
                     Config.GEMINI_API_KEY_2,
@@ -20478,7 +20813,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Melissa v8.0",
     description="Melissa V8.0 — Agente de Recepción Hipernaturalmente Humana",
-    version="8.0.9",
+    version="8.0.10",
     lifespan=lifespan
 )
 
@@ -20921,7 +21256,7 @@ async def health():
 
     return {
         "status":         "online",
-        "version":        "8.0.9",
+        "version":        "8.0.10",
         "clinic":         clinic.get("name", "sin configurar"),
         "sector":         Config.SECTOR or clinic.get("sector", "otro"),
         "setup_done":     bool(clinic.get("setup_done")),
