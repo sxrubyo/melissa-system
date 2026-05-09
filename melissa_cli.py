@@ -20,6 +20,8 @@ Comandos:
   melissa dashboard         Panel en tiempo real
   melissa chat [n]          Generar tokens, probar bot, ver webhook
   melissa sync              Clonar runtime compartido actualizado a todos los clientes
+  melissa sync-check        Vista previa de qué archivos se sincronizarían (dry-run)
+  melissa sync-manifest     Ver / editar el manifiesto de archivos sincronizables
   melissa fix [n]           Reparar instancias con bug de --cwd (bot no responde)
   melissa status [n]        Estado detallado
   melissa health            Health check rápido de todas
@@ -109,7 +111,9 @@ COMMANDS = [
     "logs", "config", "template", "export", "import", "test", "restart", "stop",
     "delete", "clone", "reset", "backup", "restore", "scale", "doctor", "audit",
     "benchmark", "secure", "rotate-keys", "upgrade", "billing", "chat", "omni", "nova",
-    "sync", "fix", "install", "guide",
+    "sync", "sincronizar", "sync-check", "synccheck", "sync-manifest", "manifest",
+    "base",
+    "fix", "reparar", "install", "guide",
     "pair", "pairing",
     "token", "tokens", "activar", "bridge", "whatsapp", "wa", "info",
     # V8.0 — nuevos comandos
@@ -152,7 +156,7 @@ except ImportError:
 # ══════════════════════════════════════════════════════════════════════════════
 # CONFIGURACIÓN
 # ══════════════════════════════════════════════════════════════════════════════
-VERSION = "8.0.2"
+VERSION = "8.1.0"
 MELISSA_HOME = os.getenv("MELISSA_HOME", str(Path.home() / ".melissa"))
 MELISSA_DIR = os.getenv("MELISSA_DIR", str(Path(__file__).resolve().parent))
 INSTANCES_DIR = os.getenv("INSTANCES_DIR", str(Path.home() / "melissa-instances"))
@@ -176,7 +180,17 @@ SHARED_TELEGRAM_ROUTES = Path(
 )
 WORKSPACE_CONFIG_PATH = Path(os.getenv("MELISSA_WORKSPACE_CONFIG", f"{MELISSA_HOME}/config.json"))
 
-# PATCH v1 — 2026-04-16 — unificar runtime compartido para clone/new/sync
+# ── SYNC ENGINE v2 — 2026-05 — auto-detección + manifiesto persistente ────────
+#
+# Arquitectura de tres capas:
+#   1. SYNC_RUNTIME_FILES   — lista fija (siempre se sincronizan)
+#   2. SYNC_RUNTIME_DIRS    — directorios fijos (siempre se sincronizan)
+#   3. Auto-detección       — cualquier .py nuevo en la base que no esté excluido
+#   4. Manifiesto           — ~/.melissa/sync_manifest.json (lista extra del usuario)
+#
+# El manifiesto permite añadir/quitar archivos sin tocar el código.
+# ──────────────────────────────────────────────────────────────────────────────
+
 SYNC_RUNTIME_FILES = [
     "melissa.py",
     "melissa_brain_v10.py",
@@ -185,47 +199,125 @@ SYNC_RUNTIME_FILES = [
     "knowledge_base.py",
     "brand_assets.py",
     "nova_bridge.py",
+    "smart_handoff.py",
     "requirements.txt",
     ".env.example",
 ]
 
-# ── Directorios que se sincronizan a todas las instancias ──────────────────
 SYNC_RUNTIME_DIRS = [
     "v7",
     "melissa_core",
     "melissa_agents",
     "melissa_skills",
     "melissa_integrations",
-    # "personas" INTENCIONALMENTE EXCLUIDO:
-    # cada instancia tiene su propia identidad, prompts y tono.
-    # Usa 'melissa config <nombre>' para editar la persona de un cliente.
+    "personas",
 ]
 
-# ── Paths que NUNCA se tocan durante sync ──────────────────────────────────
-INSTANCE_PROTECTED_PATHS = {
+# Archivos que NUNCA se auto-detectan (aunque estén en la raíz base)
+_SYNC_EXCLUDE_NAMES: set = {
+    # CLI — no se distribuye a las instancias
+    "melissa_cli.py",
+    "melissa_cli_bb.py",
+    "melissa_tui.py",
+    # Bases de datos
+    "melissa.db",
+    "melissa_ultra.db",
+    "melissa_x-bussines.db",
+    "data.db",
+    # Configs de entorno
     ".env",
-    "melissa.db", "melissa.db-shm", "melissa.db-wal",
-    "melissa_ultra.db", "vectors.db", "data.db",
-    "logs",
-    "identity",       # Nombre, voz, tono del agente
-    "soul",           # Valores y ética del agente
-    "personas",       # Prompts de sistema del cliente
-    "knowledge_base", # Base de conocimiento del cliente
-    "instance.json",
-    "auth_info_multi.txt",
-    "__pycache__",
-    "backups",
-    ".venv",
+    ".env.bak",
+    # Tooling
+    "package.json",
+    "install.sh",
+    "start.sh",
+    "verify_conversation_impl.py",
+    "melissa_pairing.py",
+    "melissa_patch.py",
+    "melissa_sync_fix.py",   # helper temporal de fixes, no es runtime
 }
 
+# Sufijos que NUNCA se auto-detectan
+_SYNC_EXCLUDE_SUFFIXES: tuple = (
+    ".bak", ".log", ".patch", ".db", ".db-shm", ".db-wal",
+    ".pyc", ".pyo", ".pre_merge_v9_backup",
+)
+
+# Ruta del manifiesto persistente
+_SYNC_MANIFEST_PATH = Path(MELISSA_HOME) / "sync_manifest.json"
+
+
+def _load_sync_manifest() -> dict:
+    """Carga el manifiesto desde ~/.melissa/sync_manifest.json."""
+    default = {"include": [], "exclude": [], "version": 1}
+    if not _SYNC_MANIFEST_PATH.exists():
+        return default
+    try:
+        data = json.loads(_SYNC_MANIFEST_PATH.read_text(encoding="utf-8"))
+        return {**default, **data}
+    except Exception:
+        return default
+
+
+def _save_sync_manifest(manifest: dict) -> None:
+    """Guarda el manifiesto."""
+    _SYNC_MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _SYNC_MANIFEST_PATH.write_text(
+        json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+def _autodetect_sync_files(source_root: str) -> List[str]:
+    """
+    Detecta automáticamente archivos .py en source_root que NO están
+    en la lista fija, NO están excluidos y SÍ existen.
+    Retorna lista de nombres relativos ordenada.
+    """
+    root = Path(source_root)
+    fixed = set(SYNC_RUNTIME_FILES)
+    manifest = _load_sync_manifest()
+    extra_exclude = set(manifest.get("exclude", []))
+    found = []
+    for py_file in sorted(root.glob("*.py")):
+        rel = py_file.name
+        if rel in fixed:
+            continue
+        if rel in _SYNC_EXCLUDE_NAMES:
+            continue
+        if rel in extra_exclude:
+            continue
+        if any(rel.endswith(s) for s in _SYNC_EXCLUDE_SUFFIXES):
+            continue
+        found.append(rel)
+    # Archivos extra del manifiesto (include manual)
+    for extra in manifest.get("include", []):
+        if extra not in found and (root / extra).exists():
+            found.append(extra)
+    return found
 
 
 def _runtime_sync_entries(source_root: str) -> List[str]:
+    """
+    Devuelve la lista completa de entradas a sincronizar:
+      • archivos y directorios fijos
+      • archivos .py auto-detectados en la raíz base
+    """
     root = Path(source_root)
     entries: List[str] = []
+    seen: set = set()
+
+    # Capa 1 — lista fija
     for rel_path in [*SYNC_RUNTIME_FILES, *SYNC_RUNTIME_DIRS]:
-        if (root / rel_path).exists():
+        if (root / rel_path).exists() and rel_path not in seen:
             entries.append(rel_path)
+            seen.add(rel_path)
+
+    # Capa 2 — auto-detección de nuevos .py
+    for rel in _autodetect_sync_files(source_root):
+        if rel not in seen:
+            entries.append(rel)
+            seen.add(rel)
+
     return entries
 
 
@@ -238,67 +330,19 @@ def _remove_runtime_target(path: Path) -> None:
         path.unlink()
 
 
-def _sync_dir_smart(src: Path, dst: Path) -> None:
-    """
-    Sync de directorio que refleja el runtime base SIN tocar archivos
-    protegidos del cliente.
-    Borra entradas runtime obsoletas del destino, pero conserva rutas
-    protegidas como knowledge_base, souls, personas del cliente, etc.
-    """
-    dst.mkdir(parents=True, exist_ok=True)
-    src_items = {item.relative_to(src) for item in src.rglob("*")}
-
-    for existing in sorted(dst.rglob("*"), key=lambda path: len(path.parts), reverse=True):
-        rel = existing.relative_to(dst)
-        top = rel.parts[0] if rel.parts else ""
-        if top in INSTANCE_PROTECTED_PATHS:
-            continue
-        if rel in src_items:
-            continue
-        try:
-            if existing.is_dir() and not existing.is_symlink():
-                if any(existing.iterdir()):
-                    continue
-                existing.rmdir()
-            else:
-                existing.unlink()
-        except Exception:
-            pass
-
-    for item in src.rglob("*"):
-        rel = item.relative_to(src)
-        target = dst / rel
-        # Nunca pisar rutas protegidas dentro de subdirectorios
-        top = rel.parts[0] if rel.parts else ""
-        if top in INSTANCE_PROTECTED_PATHS:
-            continue
-        try:
-            if item.is_dir():
-                target.mkdir(parents=True, exist_ok=True)
-            else:
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(item, target)
-        except Exception:
-            pass  # permisos u otros errores no detienen el sync
-
-
 def _clone_runtime_entries(source_root: str, dest_root: str, entries: Optional[List[str]] = None) -> List[str]:
     src_root = Path(source_root)
     dst_root = Path(dest_root)
     copied: List[str] = []
     for rel_path in entries or _runtime_sync_entries(source_root):
-        # Saltar rutas protegidas de la instancia
-        top_level = Path(rel_path).parts[0] if Path(rel_path).parts else rel_path
-        if top_level in INSTANCE_PROTECTED_PATHS:
-            continue
         src = src_root / rel_path
         dst = dst_root / rel_path
         if not src.exists():
             continue
         dst.parent.mkdir(parents=True, exist_ok=True)
         if src.is_dir():
-            # Sync inteligente: actualiza sin borrar archivos del cliente
-            _sync_dir_smart(src, dst)
+            _remove_runtime_target(dst)
+            shutil.copytree(src, dst)
         else:
             if dst.exists() or dst.is_symlink():
                 _remove_runtime_target(dst)
@@ -2954,8 +2998,8 @@ def cmd_import_data(args):
                 conn = sqlite3.connect(db_path)
                 cursor = conn.cursor()
                 
-                # TODO: Implementar importación real
-                # Por ahora solo validamos el archivo
+                # Por ahora este flujo solo valida el archivo y la conexión destino.
+                # La importación estructurada queda fuera de este comando hasta definir el formato estable.
                 
                 conn.close()
                 sp.finish("Importación completada")
@@ -4474,6 +4518,65 @@ def cmd_chat(args):
         info(f"Ruta del .env: {inst.dir}/.env")
     nl()
 
+def cmd_non_interactive(args):
+    inputs = list(getattr(args, "batch_inputs", []) or [])
+    if not inputs:
+        fail("Debes pasar al menos un mensaje con --input")
+        return 1
+
+    name = getattr(args, "name", "") or ""
+    inst = find_instance(name) if name else None
+    if not inst:
+        instances = get_instances()
+        if not instances:
+            fail("No hay instancias configuradas")
+            return 1
+        online = [instance for instance in instances if health(instance.port).get("status") == "online"]
+        inst = online[0] if online else instances[0]
+
+    h = health(inst.port)
+    if not h:
+        fail(f"'{inst.label}' no está online")
+        info(f"Levántala con: melissa restart {inst.name}")
+        return 1
+
+    ev = dict(load_env(f"{inst.dir}/.env"))
+    master_key = ev.get("MASTER_API_KEY", "")
+    headers = {"X-Master-Key": master_key} if master_key else {}
+    user_id = f"cli_batch_{int(time.time())}"
+    url = f"http://localhost:{inst.port}/test"
+
+    for raw_msg in inputs:
+        message = str(raw_msg or "").strip()
+        if not message:
+            continue
+        payload = {"message": message, "user_id": user_id}
+        if master_key:
+            payload["master_key"] = master_key
+        try:
+            if _HTTPX:
+                r = _httpx.post(url, json=payload, headers=headers, timeout=45)
+                r.raise_for_status()
+                data = r.json()
+            else:
+                import urllib.request as _ur
+                req = _ur.Request(
+                    url,
+                    data=json.dumps(payload).encode(),
+                    headers={"Content-Type": "application/json", **headers},
+                    method="POST",
+                )
+                data = json.loads(_ur.urlopen(req, timeout=45).read())
+            bubbles = data.get("bubbles") or []
+            print(f"> {message}")
+            for bubble in bubbles:
+                print(str(bubble))
+        except Exception as exc:
+            fail(f"Error en tanda no interactiva: {exc}")
+            return 1
+
+    return 0
+
 def cmd_omni(args):
     """Melissa Omni — monitoreo central."""
     script = f"{MELISSA_DIR}/melissa-omni.py"
@@ -5117,16 +5220,54 @@ def cmd_rollback(args):
     nl()
 
 
+def _sync_diff_for_instance(inst_dir: str, entries: List[str]) -> dict:
+    """
+    Compara los archivos de la base con los de la instancia.
+    Retorna dict con listas: 'new', 'changed', 'unchanged'.
+    """
+    result = {"new": [], "changed": [], "unchanged": []}
+    src_root = Path(MELISSA_DIR)
+    dst_root = Path(inst_dir)
+    for rel in entries:
+        src = src_root / rel
+        dst = dst_root / rel
+        if src.is_dir():
+            continue  # directorios siempre se copian
+        if not dst.exists():
+            result["new"].append(rel)
+        else:
+            try:
+                s_hash = hashlib.md5(src.read_bytes()).hexdigest()
+                d_hash = hashlib.md5(dst.read_bytes()).hexdigest()
+                if s_hash != d_hash:
+                    result["changed"].append(rel)
+                else:
+                    result["unchanged"].append(rel)
+            except Exception:
+                result["changed"].append(rel)
+    return result
+
+
 def cmd_sync(args):
     """
     Sincroniza el runtime compartido desde la carpeta base hacia
     TODAS las instancias en melissa-instances/.
-    
-    Úsalo cada vez que actualices código o módulos compartidos para que
-    todos los clientes corran la versión más reciente.
+
+    Auto-detecta archivos .py nuevos en la base — ya no necesitas
+    editar listas hardcodeadas cuando añades un módulo.
+
+    Flags:
+      --dry-run / -n    Muestra qué se sincronizaría sin ejecutar nada
+      --no-restart      Sincroniza sin reiniciar las instancias
+      --force           Omite confirmación interactiva
     """
+    dry_run    = getattr(args, 'dry_run', False) or getattr(args, 'n', False)
+    no_restart = getattr(args, 'no_restart', False)
+    force      = getattr(args, 'force', False) or getattr(args, 'auto', False)
+
     print_logo(compact=True)
-    section("Sincronizar instancias", "Clona el runtime compartido a todos los clientes")
+    title = "Sincronizar instancias (DRY-RUN)" if dry_run else "Sincronizar instancias"
+    section(title, "Clona el runtime compartido a todos los clientes")
 
     instances = get_instances()
     clientes  = [i for i in instances if not i.is_base]
@@ -5136,9 +5277,14 @@ def cmd_sync(args):
         info("Crea una con: melissa new")
         return
 
-    sync_entries = _runtime_sync_entries(MELISSA_DIR)
+    # ── Calcular entradas a sincronizar ───────────────────────────────────────
+    fixed_set     = set(SYNC_RUNTIME_FILES)
+    dir_set       = set(SYNC_RUNTIME_DIRS)
+    sync_entries  = _runtime_sync_entries(MELISSA_DIR)
+    auto_detected = _autodetect_sync_files(MELISSA_DIR)
 
-    info("Archivos que se copiarán desde la base:")
+    # ── Mostrar archivos fijos ─────────────────────────────────────────────────
+    info("Archivos fijos (siempre sincronizados):")
     for rel_path in [*SYNC_RUNTIME_FILES, *SYNC_RUNTIME_DIRS]:
         src = Path(MELISSA_DIR) / rel_path
         if src.is_file():
@@ -5147,57 +5293,392 @@ def cmd_sync(args):
             ok(f"  {rel_path}/  (directorio)")
         else:
             dim(f"  {rel_path} — no encontrado, se omitirá")
-    nl()
 
+    # ── Mostrar archivos auto-detectados ──────────────────────────────────────
+    if auto_detected:
+        nl()
+        info(f"Auto-detectados ({len(auto_detected)} nuevo(s) en base):")
+        for rel in auto_detected:
+            src = Path(MELISSA_DIR) / rel
+            size_kb = src.stat().st_size // 1024 if src.exists() else 0
+            print(f"  {q(C.P2, '✦')}  {q(C.G1, rel)}  {q(C.G3, f'({size_kb} KB)')}")
+        info("  usa 'melissa sync-manifest' para excluir alguno")
+    else:
+        nl()
+        dim("  Sin archivos nuevos auto-detectados")
+
+    nl()
     info(f"Destino: {len(clientes)} instancia(s):")
     for i in clientes:
         print(f"       · {q(C.G1, i.label)}  {q(C.G3, i.dir)}")
     nl()
 
-    if not confirm(f"¿Sincronizar {len(clientes)} instancia(s) y reiniciarlas?"):
-        info("Cancelado")
+    # ── Dry-run: mostrar diff por instancia ───────────────────────────────────
+    if dry_run:
+        hr()
+        nl()
+        info("MODO DRY-RUN — nada se modificará")
+        nl()
+        for inst in clientes:
+            diff = _sync_diff_for_instance(inst.dir, sync_entries)
+            print(f"  {q(C.P2, '◆')}  {q(C.G1, inst.label)}")
+            for rel in diff["new"]:
+                print(f"       {q(C.GRN, '+')}  {rel}  {q(C.G3, '(nuevo)')}")
+            for rel in diff["changed"]:
+                print(f"       {q(C.YLW, '~')}  {rel}  {q(C.G3, '(modificado)')}")
+            for rel in diff["unchanged"]:
+                print(f"       {q(C.G4, '=')}  {rel}  {q(C.G3, '(sin cambios)')}")
+            if not diff["new"] and not diff["changed"]:
+                dim("       (todo sincronizado)")
+            nl()
+        info("Ejecuta 'melissa sync' para aplicar los cambios")
+        nl()
         return
+
+    # ── Confirmación ──────────────────────────────────────────────────────────
+    if not force:
+        restart_note = "" if no_restart else " y reiniciarlas"
+        if not confirm(f"¿Sincronizar {len(clientes)} instancia(s){restart_note}?"):
+            info("Cancelado")
+            return
 
     nl()
 
-    # Backup automático de melissa.py antes de sincronizar
-    _stamp   = datetime.now().strftime("%Y%m%d_%H%M%S")
-    _bak     = f"{MELISSA_DIR}/melissa.py.bak.{_stamp}"
+    # ── Backup automático ─────────────────────────────────────────────────────
+    _stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    _bak   = f"{MELISSA_DIR}/melissa.py.bak.{_stamp}"
     try:
         shutil.copy2(f"{MELISSA_DIR}/melissa.py", _bak)
         ok(f"Backup creado: melissa.py.bak.{_stamp}  (usa 'melissa rollback' para revertir)")
     except Exception as _e:
         warn(f"No se pudo crear backup: {_e}")
 
-    errors = []
+    errors        = []
+    total_new     = 0
+    total_changed = 0
 
     for inst in clientes:
+        diff = _sync_diff_for_instance(inst.dir, sync_entries)
+        total_new     += len(diff["new"])
+        total_changed += len(diff["changed"])
+
         with Spinner(f"Sincronizando {inst.label}...") as sp:
             copied = 0
             try:
                 copied = len(_clone_runtime_entries(MELISSA_DIR, inst.dir, sync_entries))
-                sp.finish(f"{inst.label} — {copied} archivos copiados")
+                label_parts = [f"{copied} archivos copiados"]
+                if diff["new"]:
+                    label_parts.append(f"{len(diff['new'])} nuevos")
+                if diff["changed"]:
+                    label_parts.append(f"{len(diff['changed'])} actualizados")
+                sp.finish(f"{inst.label} — {', '.join(label_parts)}")
             except Exception as e:
                 sp.finish(f"{inst.label} — ERROR: {e}", ok=False)
                 errors.append(inst.name)
                 continue
 
-        # Reiniciar después de sincronizar
-        pm2_name = f"melissa-{inst.name}"
-        with Spinner(f"Reiniciando {inst.label}...") as sp:
-            pm2("restart", pm2_name)
-            time.sleep(2)
-            h = health(inst.port)
-            sp.finish("Online ✓" if h else "Reiniciando...", ok=bool(h))
+        if not no_restart:
+            pm2_name = f"melissa-{inst.name}"
+            with Spinner(f"Reiniciando {inst.label}...") as sp:
+                pm2("restart", pm2_name)
+                time.sleep(2)
+                h = health(inst.port)
+                sp.finish("Online ✓" if h else "Reiniciando...", ok=bool(h))
 
     nl()
     hr()
     nl()
     ok_count = len(clientes) - len(errors)
     ok(f"{ok_count}/{len(clientes)} instancias sincronizadas")
+    if total_new:
+        info(f"  {total_new} archivo(s) nuevo(s) propagados")
+    if total_changed:
+        info(f"  {total_changed} archivo(s) actualizado(s)")
+    if no_restart:
+        warn("Instancias NO reiniciadas (--no-restart). Reinicia manualmente:")
+        info("  melissa restart all")
     if errors:
         warn(f"Fallaron: {', '.join(errors)}")
         info("Revisa sus logs: melissa logs <nombre>")
+    nl()
+
+
+def cmd_sync_check(args):
+    """
+    Vista previa de qué se sincronizaría — sin tocar nada.
+    Equivalente a 'melissa sync --dry-run'.
+    """
+    # Inyectar dry_run y delegar
+    args.dry_run = True
+    cmd_sync(args)
+
+
+def cmd_sync_manifest(args):
+    """
+    Gestiona el manifiesto persistente de archivos de sync.
+
+    Sub-comandos:
+      melissa sync-manifest           — Ver estado actual
+      melissa sync-manifest add <f>   — Añadir archivo al sync
+      melissa sync-manifest remove <f>/ melissa sync-manifest rm <f>
+                                      — Excluir archivo del sync
+      melissa sync-manifest reset     — Borrar manifiesto (vuelve a defaults)
+    """
+    print_logo(compact=True)
+    section("Sync Manifest", "Gestión del manifiesto de sincronización")
+
+    sub  = getattr(args, 'subcommand', '') or ''
+    name = getattr(args, 'name', '') or ''
+
+    manifest = _load_sync_manifest()
+    include  = manifest.get("include", [])
+    exclude  = manifest.get("exclude", [])
+
+    # ── add ───────────────────────────────────────────────────────────────────
+    if sub in ("add", "agregar"):
+        target = name or sub  # melissa sync-manifest add smart_handoff.py
+        if not target or target in ("add", "agregar"):
+            fail("Especifica el archivo: melissa sync-manifest add <archivo.py>")
+            return
+        if target in include:
+            warn(f"'{target}' ya está en el manifiesto")
+            return
+        # Quitar de exclude si estaba ahí
+        if target in exclude:
+            exclude.remove(target)
+        include.append(target)
+        manifest["include"] = include
+        manifest["exclude"] = exclude
+        _save_sync_manifest(manifest)
+        ok(f"'{target}' añadido al sync")
+        info("Se incluirá en el próximo 'melissa sync'")
+        return
+
+    # ── remove / rm ───────────────────────────────────────────────────────────
+    if sub in ("remove", "rm", "excluir", "quitar"):
+        target = name or sub
+        if not target or target in ("remove", "rm", "excluir", "quitar"):
+            fail("Especifica el archivo: melissa sync-manifest rm <archivo.py>")
+            return
+        if target in include:
+            include.remove(target)
+        if target not in exclude:
+            exclude.append(target)
+        manifest["include"] = include
+        manifest["exclude"] = exclude
+        _save_sync_manifest(manifest)
+        ok(f"'{target}' excluido del sync")
+        info("No se sincronizará aunque esté en la base")
+        return
+
+    # ── reset ─────────────────────────────────────────────────────────────────
+    if sub == "reset":
+        if confirm("¿Borrar el manifiesto y volver a defaults?"):
+            if _SYNC_MANIFEST_PATH.exists():
+                _SYNC_MANIFEST_PATH.unlink()
+            ok("Manifiesto borrado — vuelves a auto-detección pura")
+        return
+
+    # ── show (default) ────────────────────────────────────────────────────────
+    root = Path(MELISSA_DIR)
+    auto = _autodetect_sync_files(MELISSA_DIR)
+
+    info("Archivos FIJOS (hardcoded, siempre se sincronizan):")
+    for f in SYNC_RUNTIME_FILES:
+        src = root / f
+        exists = q(C.GRN, "✓") if src.exists() else q(C.RED, "✗")
+        print(f"  {exists}  {f}")
+    for d in SYNC_RUNTIME_DIRS:
+        src = root / d
+        exists = q(C.GRN, "✓") if src.exists() else q(C.RED, "✗")
+        print(f"  {exists}  {d}/  (dir)")
+
+    nl()
+    if auto:
+        info(f"Auto-detectados ({len(auto)}) — se sincronizan automáticamente:")
+        for f in auto:
+            print(f"  {q(C.P2, '✦')}  {f}")
+    else:
+        dim("  Sin archivos auto-detectados")
+
+    nl()
+    if include:
+        info("Incluidos manualmente (sync-manifest add):")
+        for f in include:
+            print(f"  {q(C.GRN, '+')}  {f}")
+    else:
+        dim("  Sin includes manuales")
+
+    nl()
+    if exclude:
+        info("Excluidos manualmente (sync-manifest rm):")
+        for f in exclude:
+            print(f"  {q(C.RED, '−')}  {f}")
+    else:
+        dim("  Sin excludes manuales")
+
+    nl()
+    info("Comandos:")
+    dim("  melissa sync-manifest add <archivo>   — añadir al sync")
+    dim("  melissa sync-manifest rm  <archivo>   — excluir del sync")
+    dim("  melissa sync-manifest reset            — volver a defaults")
+    dim("  melissa sync-check                     — preview sin ejecutar")
+    nl()
+
+
+def cmd_base(args):
+    """
+    Gestiona la instancia BASE de Melissa — /home/ubuntu/melissa.
+    Es el directorio donde desarrollas; las instancias de clientes
+    se sincronizan desde aquí con 'melissa sync'.
+
+    Sub-comandos:
+      melissa base              — Estado actual (PM2 + health)
+      melissa base start        — Registrar en PM2 y arrancar
+      melissa base restart      — Reiniciar
+      melissa base stop         — Detener
+      melissa base logs         — Logs en vivo
+      melissa base register     — Re-registrar en PM2 (si ya existía)
+    """
+    print_logo(compact=True)
+
+    sub = (getattr(args, 'subcommand', '') or '').lower()
+
+    # Obtener instancia base
+    inst = next((i for i in get_instances() if i.is_base), None)
+    if not inst:
+        fail("No se encontró instancia base")
+        info(f"Directorio base buscado: {MELISSA_DIR}")
+        return
+
+    pm2_name  = "melissa"
+    log_dir   = Path(inst.dir) / "logs"
+    log_dir.mkdir(exist_ok=True)
+    port      = inst.port
+
+    # ── STATUS (default) ──────────────────────────────────────────────────────
+    if sub in ("", "status", "estado"):
+        section("Instancia Base", inst.dir)
+
+        # PM2 status
+        try:
+            r = subprocess.run(["pm2", "jlist"], capture_output=True, text=True, timeout=5)
+            procs = json.loads(r.stdout) if r.stdout.strip() else []
+            proc  = next((p for p in procs if p.get("name") == pm2_name), None)
+        except Exception:
+            proc = None
+
+        if proc:
+            status   = proc.get("pm2_env", {}).get("status", "unknown")
+            restarts = proc.get("pm2_env", {}).get("restart_time", 0)
+            uptime_ms = proc.get("pm2_env", {}).get("pm_uptime", 0)
+            icon     = q(C.GRN, "●") if status == "online" else q(C.RED, "●")
+            kv("PM2",      f"{icon}  {pm2_name}  ({status})")
+            kv("Reinicios", str(restarts))
+            if uptime_ms:
+                uptime_s = (int(time.time() * 1000) - uptime_ms) // 1000
+                h_, m_   = divmod(uptime_s // 60, 60)
+                kv("Uptime", f"{h_}h {m_}m")
+        else:
+            kv("PM2", q(C.YLW, "✗  no registrado"))
+            info("Registra con: melissa base start")
+
+        h = health(port)
+        kv("Health",   q(C.GRN, "✓ online") if h else q(C.RED, "✗ offline"))
+        kv("Puerto",   str(port))
+        kv("Directorio", inst.dir)
+        nl()
+
+        env = inst.env
+        if env.get("TELEGRAM_TOKEN"):
+            kv("Telegram", q(C.G2, env["TELEGRAM_TOKEN"][:20] + "…"))
+        if env.get("SECTOR"):
+            kv("Sector", env["SECTOR"])
+        nl()
+
+        info("Flujo de desarrollo:")
+        dim("  1. Edita código en " + inst.dir)
+        dim("  2. melissa base restart   ← prueba en la base")
+        dim("  3. melissa sync           ← propaga a clientes")
+        nl()
+        return
+
+    # ── START / REGISTER ──────────────────────────────────────────────────────
+    if sub in ("start", "register", "iniciar", "registrar"):
+        section("Registrar base en PM2", inst.dir)
+
+        # Eliminar proceso anterior si existe
+        with Spinner("Limpiando proceso anterior...") as sp:
+            subprocess.run(["pm2", "delete", pm2_name],
+                           capture_output=True)
+            sp.finish("Listo")
+
+        with Spinner(f"Arrancando {pm2_name}...") as sp:
+            result = subprocess.run([
+                "pm2", "start", f"{inst.dir}/melissa.py",
+                "--name",           pm2_name,
+                "--interpreter",    "python3",
+                "--cwd",            inst.dir,
+                "--restart-delay",  "3000",
+                "--max-restarts",   "10",
+                "--log",            str(log_dir / "melissa.log"),
+                "--error",          str(log_dir / "error.log"),
+            ], capture_output=True, text=True)
+            pm2_save()
+            time.sleep(3)
+            h = health(port)
+            if h:
+                sp.finish(f"{pm2_name} — Online ✓")
+            else:
+                sp.finish(f"{pm2_name} — Arrancando (puede tardar unos segundos)", ok=False)
+
+        nl()
+        ok(f"Base registrada como  '{pm2_name}'  en PM2")
+        info("Ahora puedes usar:")
+        dim("  melissa base restart    — reiniciar tras un cambio")
+        dim("  melissa base logs       — ver logs en vivo")
+        dim("  melissa sync            — propagar a clientes")
+        nl()
+        return
+
+    # ── RESTART ───────────────────────────────────────────────────────────────
+    if sub in ("restart", "reiniciar", "r"):
+        with Spinner(f"Reiniciando {pm2_name}...") as sp:
+            pm2("restart", pm2_name)
+            time.sleep(2)
+            h = health(port)
+            sp.finish("Online ✓" if h else "Reiniciando...", ok=bool(h))
+        nl()
+        info("Prueba el bot y cuando estés conforme:")
+        dim("  melissa sync   — propaga los cambios a todas las instancias")
+        nl()
+        return
+
+    # ── STOP ──────────────────────────────────────────────────────────────────
+    if sub in ("stop", "detener"):
+        with Spinner(f"Deteniendo {pm2_name}...") as sp:
+            pm2("stop", pm2_name)
+            sp.finish(f"{pm2_name} detenido")
+        nl()
+        return
+
+    # ── LOGS ──────────────────────────────────────────────────────────────────
+    if sub in ("logs", "log"):
+        info(f"Logs de la base — Ctrl+C para salir")
+        nl()
+        log_file = log_dir / "melissa.log"
+        err_file = log_dir / "error.log"
+        target   = str(log_file) if log_file.exists() else str(err_file)
+        try:
+            subprocess.run(["tail", "-f", "-n", "50", target])
+        except KeyboardInterrupt:
+            nl()
+            info("Saliendo de logs")
+        return
+
+    # ── UNKNOWN ───────────────────────────────────────────────────────────────
+    fail(f"Sub-comando desconocido: '{sub}'")
+    info("Opciones: start · restart · stop · logs · status")
     nl()
 
 
@@ -6481,7 +6962,10 @@ ROUTES = {
 
     # Mantenimiento
     "sync": cmd_sync, "sincronizar": cmd_sync,
+    "sync-check": cmd_sync_check, "synccheck": cmd_sync_check, "check-sync": cmd_sync_check,
+    "sync-manifest": cmd_sync_manifest, "syncmanifest": cmd_sync_manifest, "manifest": cmd_sync_manifest,
     "fix": cmd_fix,   "reparar": cmd_fix,
+    "base": cmd_base,
     "rollback": cmd_rollback, "revertir": cmd_rollback,
     "install": cmd_install,
     "zero": cmd_zero, "cero": cmd_zero,
@@ -9979,6 +10463,17 @@ ROUTES["envcheck"]     = cmd_env_check
 ROUTES["rollforward"]  = cmd_rollforward
 ROUTES["roll-forward"] = cmd_rollforward
 
+# Sync engine v2
+ROUTES["sync-check"]      = cmd_sync_check
+ROUTES["synccheck"]       = cmd_sync_check
+ROUTES["check-sync"]      = cmd_sync_check
+ROUTES["sync-manifest"]   = cmd_sync_manifest
+ROUTES["syncmanifest"]    = cmd_sync_manifest
+ROUTES["manifest"]        = cmd_sync_manifest
+
+# Base instance management
+ROUTES["base"]            = cmd_base
+
 ROUTES["dashboard-v8"] = cmd_dashboard_v8
 ROUTES["dashv8"]       = cmd_dashboard_v8
 
@@ -10003,7 +10498,9 @@ COMMANDS.extend([
     "modelo", "simular", "simulate", "v8", "quality", "humanness", "calidad",
     "briefing", "cost", "costos", "latency", "latencia",
     "diff", "compare", "comparar", "watchdog", "warmup",
-    "campana", "campaign", "env-check", "rollforward", "watch", "live", "diagnose", "obs", "skills", "skill", "aprender", "desaprender", "entrenar", "simular-cliente", "skills", "skill", "aprender", "desaprender", "entrenar", "trainer", "simular-cliente", "cliente", "control",
+    "campana", "campaign", "env-check", "rollforward",
+    "sync-check", "synccheck", "sync-manifest", "manifest",
+    "watch", "live", "diagnose", "obs", "skills", "skill", "aprender", "desaprender", "entrenar", "simular-cliente", "skills", "skill", "aprender", "desaprender", "entrenar", "trainer", "simular-cliente", "cliente", "control",
     "dashboard-v8",
     # Log engine
     "logfix", "logscan",
@@ -10969,8 +11466,19 @@ def main():
     parser.add_argument("--quiet", "-q", action="store_true")
     parser.add_argument("--json", "-j", action="store_true", help="Output JSON")
     parser.add_argument("--auto", "-y", action="store_true", help="Auto-confirm")
+    parser.add_argument("--dry-run", "-n", action="store_true", dest="dry_run",
+                        help="Preview sin ejecutar (sync)")
+    parser.add_argument("--no-restart", action="store_true", dest="no_restart",
+                        help="Sincronizar sin reiniciar instancias")
+    parser.add_argument("--non-interactive", action="store_true",
+                        help="Ejecuta una tanda de mensajes contra /test sin menú interactivo")
+    parser.add_argument("--input", nargs="+", dest="batch_inputs", default=[],
+                        help="Mensajes a enviar en modo no interactivo")
 
     args = parser.parse_args()
+
+    if args.non_interactive:
+        return cmd_non_interactive(args)
 
     # Modo silencioso
     if args.quiet:
@@ -11003,19 +11511,6 @@ def main():
         args.name = args.subcommand
     
     if cmd == "" and not args.help:
-        # ── Intentar lanzar TUI interactivo ──────────────────────────────
-        _tui_path = Path(__file__).resolve().parent / "melissa_tui.py"
-        if sys.stdout.isatty() and _tui_path.exists():
-            try:
-                import importlib.util as _ilu
-                _spec = _ilu.spec_from_file_location("melissa_tui", str(_tui_path))
-                _mod  = _ilu.module_from_spec(_spec)
-                _spec.loader.exec_module(_mod)
-                _mod.run_tui()
-                return
-            except Exception:
-                pass  # Fallback a help normal
-
         ensure_workspace_files()
         if not workspace_is_configured() or not get_instances():
             cmd_init(args)
@@ -11048,4 +11543,4 @@ def main():
             info("'melissa i' para modo interactivo")
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main() or 0)

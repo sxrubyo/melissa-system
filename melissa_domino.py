@@ -7,6 +7,30 @@ from typing import Any, Dict, List, Optional
 
 
 OPENCLAW_WORKSPACE = Path("/home/ubuntu/.openclaw/workspace")
+DOMINO_FALLBACK_TRIGGERS = ("empty", "exception", "below_threshold")
+
+_DOMINO_QUALITY_THRESHOLDS = {
+    "enter-demo": 0.48,
+    "clarify-demo": 0.54,
+    "bind-business": 0.58,
+    "reset-demo": 0.42,
+    "re-ground": 0.56,
+    "simulate": 0.60,
+}
+
+_DOMINO_FORBIDDEN_MARKERS = (
+    "soy una ia",
+    "soy un bot",
+    "asistente virtual",
+    "recepcionista virtual",
+    "aqui lo que hago es",
+    "aquí lo que hago es",
+    "me doy cuenta de que",
+    "no se cual es el negocio",
+    "no sé cuál es el negocio",
+    "de manera efectiva",
+    "quiero asegurarme",
+)
 
 
 def _normalize(text: str) -> str:
@@ -135,6 +159,25 @@ def _business_memory_block(business_name: str, business_ctx: str, found_online: 
     else:
         parts.append("Todavía no hay contexto externo fiable; no inventes nada.")
     return " ".join(parts)
+
+
+def _assistant_repeated_business_prompt(history: List[Dict[str, Any]]) -> bool:
+    ask_markers = (
+        "nombre del negocio",
+        "como se llama tu negocio",
+        "cómo se llama tu negocio",
+        "pasame el nombre",
+        "pásame el nombre",
+        "dime el nombre de tu negocio",
+    )
+    asks = 0
+    for item in history[-6:]:
+        if item.get("role") != "assistant":
+            continue
+        normalized = _normalize(str(item.get("content") or ""))
+        if any(marker in normalized for marker in ask_markers):
+            asks += 1
+    return asks >= 2
 
 
 def demo_opening_tone_issues(text: str) -> List[str]:
@@ -367,11 +410,10 @@ def _domino_stage(
             "action": "reacciona como alguien que acaba de ubicarse en el negocio, usa el contexto encontrado solo si es fiable y empuja a una prueba real de cliente",
         }
     if not business_name:
-        # Escalar a clarify-demo si: confusión explícita, explain_name,
-        # o ya hay 2+ turnos sin que el dueño haya dado el nombre
-        prior_turns = len([m for m in (history or []) if m.get("role") == "assistant"])
-        is_multi_turn_stuck = prior_turns >= 2
-        if explain_name or _is_confused(normalized) or is_multi_turn_stuck:
+        repeated_business_prompt = _assistant_repeated_business_prompt(list(history or []))
+        if explain_name or _is_confused(normalized) or (
+            repeated_business_prompt and _is_identity_or_meta_probe(normalized)
+        ):
             return {
                 "stage": "clarify-demo",
                 "objective": "explicar para qué necesitas el nombre del negocio y conseguirlo sin sonar a formulario",
@@ -407,6 +449,73 @@ def _domino_stage(
     }
 
 
+def build_demo_domino_contract(
+    *,
+    user_text: str,
+    business_name: str,
+    explain_name: bool = False,
+    force_stage: Optional[str] = None,
+    history: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    normalized = _normalize(user_text)
+    stage_info = _domino_stage(
+        normalized=normalized,
+        business_name=business_name,
+        explain_name=explain_name,
+        force_stage=force_stage,
+        history=list(history or []),
+    )
+
+    required_details: List[str] = []
+    if any(token in normalized for token in ("para que", "para qué", "por que", "por qué")):
+        required_details.extend(["chat", "negocio", "responder"])
+    if any(
+        token in normalized
+        for token in ("quien te hizo", "quién te hizo", "como tenerte", "cómo tenerte", "quien te creo", "quién te creó")
+    ):
+        required_details.extend(["black one", "3124348669"])
+    if any(
+        token in normalized
+        for token in ("audio", "audios", "nota de voz", "pdf", "archivo", "documento", "documentos", "imagen", "imagenes", "imágenes")
+    ):
+        required_details.extend(["audio", "pdf", "imagen"])
+    if any(
+        token in normalized
+        for token in (
+            "me mandaron tu numero",
+            "me mandaron tu número",
+            "me pasaron tu numero",
+            "me pasaron tu número",
+            "que haces",
+            "qué haces",
+            "no entiendo que haces",
+            "no entiendo qué haces",
+        )
+    ):
+        required_details.extend(["clientes", "citas", "responder"])
+    if stage_info["stage"] == "bind-business":
+        required_details.append("cliente")
+    if business_name and stage_info["stage"] in {"re-ground", "simulate"}:
+        required_details.append("negocio_actual")
+
+    ordered_required_details = list(dict.fromkeys(required_details))
+    should_reask_business_name = (
+        not business_name
+        and stage_info["stage"] in {"enter-demo", "clarify-demo", "reset-demo"}
+    )
+
+    return {
+        "decision_priority": "llm_first",
+        "fallback_triggers": list(DOMINO_FALLBACK_TRIGGERS),
+        "quality_threshold": _DOMINO_QUALITY_THRESHOLDS.get(stage_info["stage"], 0.50),
+        "repair_before_fallback": True,
+        "stage": stage_info["stage"],
+        "should_reask_business_name": should_reask_business_name,
+        "required_details": ordered_required_details,
+        "forbidden_markers": list(_DOMINO_FORBIDDEN_MARKERS),
+    }
+
+
 def build_demo_domino_payload(
     *,
     user_text: str,
@@ -416,7 +525,7 @@ def build_demo_domino_payload(
     found_online: bool,
     explain_name: bool = False,
     force_stage: Optional[str] = None,
-) -> Dict[str, str]:
+) -> Dict[str, Any]:
     normalized = _normalize(user_text)
     stage_info = _domino_stage(
         normalized=normalized,
@@ -424,6 +533,13 @@ def build_demo_domino_payload(
         explain_name=explain_name,
         force_stage=force_stage,
         history=list(history or []),
+    )
+    contract = build_demo_domino_contract(
+        user_text=user_text,
+        business_name=business_name,
+        explain_name=explain_name,
+        force_stage=force_stage,
+        history=history,
     )
     sources = load_domino_sources()
     history_block = _history_block(list(history or []))
@@ -576,4 +692,5 @@ EJEMPLOS DE DECISIÓN
         "action": stage_info["action"],
         "system": system,
         "user": user_block,
+        "contract": contract,
     }

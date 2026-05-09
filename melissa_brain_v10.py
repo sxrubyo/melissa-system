@@ -26,6 +26,7 @@ CÓMO USAR (al final de melissa.py, en init o en el bloque de startup):
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import re
 import logging
 import random
@@ -333,6 +334,32 @@ _LLM_STRUCTURAL_TELLS = {
     ],
 }
 
+LLM_FIRST_FALLBACK_TRIGGERS = ("empty", "exception", "below_threshold")
+LLM_FIRST_QUALITY_THRESHOLD = 0.45
+
+
+@dataclass(frozen=True)
+class LLMFirstVerdict:
+    failure_kind: str
+    failure_signal: str
+    quality_score: float
+    quality_threshold: float
+    should_normalize: bool
+    should_fallback: bool
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "decision_priority": "llm_first",
+            "fallback_triggers": list(LLM_FIRST_FALLBACK_TRIGGERS),
+            "failure_kind": self.failure_kind,
+            "failure_signal": self.failure_signal,
+            "quality_score": self.quality_score,
+            "quality_threshold": self.quality_threshold,
+            "below_threshold": self.failure_kind == "below_threshold",
+            "should_normalize": self.should_normalize,
+            "should_fallback": self.should_fallback,
+        }
+
 
 class LLMResponseValidator:
     """
@@ -396,6 +423,69 @@ class LLMResponseValidator:
             return True
         return False
 
+    def score_first_turn_response(self, response: str) -> float:
+        cleaned = (response or "").strip()
+        if not cleaned:
+            return 0.0
+        unique_words = {word for word in re.findall(r"\w+", cleaned.lower()) if len(word) > 1}
+        score = 0.52
+        if len(cleaned) >= 40:
+            score += 0.12
+        if len(unique_words) >= _LLM_STRUCTURAL_TELLS["min_unique_words"]:
+            score += 0.12
+        if any(marker in cleaned for marker in _LLM_STRUCTURAL_TELLS["conversational_markers"]):
+            score += 0.10
+        if cleaned.lower().startswith(("hola", "buenas", "hey")):
+            score += 0.06
+        return round(min(score, 0.95), 2)
+
+    def assess_first_turn_response(self, response: str) -> LLMFirstVerdict:
+        if self.is_empty_or_useless(response):
+            return LLMFirstVerdict(
+                failure_kind="empty",
+                failure_signal="empty_response",
+                quality_score=0.0,
+                quality_threshold=LLM_FIRST_QUALITY_THRESHOLD,
+                should_normalize=True,
+                should_fallback=True,
+            )
+        if self.is_template_response(response):
+            return LLMFirstVerdict(
+                failure_kind="below_threshold",
+                failure_signal="template_response",
+                quality_score=0.18,
+                quality_threshold=LLM_FIRST_QUALITY_THRESHOLD,
+                should_normalize=True,
+                should_fallback=True,
+            )
+        if self.looks_like_question_only(response):
+            return LLMFirstVerdict(
+                failure_kind="below_threshold",
+                failure_signal="question_only",
+                quality_score=0.26,
+                quality_threshold=LLM_FIRST_QUALITY_THRESHOLD,
+                should_normalize=True,
+                should_fallback=True,
+            )
+        if self.is_low_quality_first_turn(response):
+            return LLMFirstVerdict(
+                failure_kind="below_threshold",
+                failure_signal="low_quality_first_turn",
+                quality_score=0.34,
+                quality_threshold=LLM_FIRST_QUALITY_THRESHOLD,
+                should_normalize=True,
+                should_fallback=True,
+            )
+        score = self.score_first_turn_response(response)
+        return LLMFirstVerdict(
+            failure_kind="ok",
+            failure_signal="accepted",
+            quality_score=score,
+            quality_threshold=LLM_FIRST_QUALITY_THRESHOLD,
+            should_normalize=False,
+            should_fallback=False,
+        )
+
     def is_repeating_previous(self, response: str, history: List[Dict[str, Any]]) -> bool:
         """
         NUEVO v10.1: True si la respuesta repite casi exactamente
@@ -423,6 +513,23 @@ class LLMResponseValidator:
 _validator = LLMResponseValidator()
 
 
+def assess_llm_first_response(
+    response: Optional[str],
+    *,
+    exception: Optional[BaseException] = None,
+) -> Dict[str, Any]:
+    if exception is not None:
+        return LLMFirstVerdict(
+            failure_kind="exception",
+            failure_signal=exception.__class__.__name__,
+            quality_score=0.0,
+            quality_threshold=LLM_FIRST_QUALITY_THRESHOLD,
+            should_normalize=True,
+            should_fallback=True,
+        ).as_dict()
+    return _validator.assess_first_turn_response(response or "").as_dict()
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 3. PATCH LLM-FIRST — monkeypatches al ResponseGenerator
 # ══════════════════════════════════════════════════════════════════════════════
@@ -441,16 +548,19 @@ def _make_llm_first_normalize(original_fn):
                 return original_fn(self, response, clinic, personality, user_msg, history)
             return original_fn(self, response, clinic, personality, user_msg, history)
 
-        # Primer turno: solo intervenir si la respuesta está vacía o es inútil
-        if (
-            _validator.is_empty_or_useless(response)
-            or _validator.looks_like_question_only(response)
-            or _validator.is_low_quality_first_turn(response)
-        ):
-            log.debug("[brain_v10] respuesta inútil en primer turno → aplicando normalize")
+        verdict = _validator.assess_first_turn_response(response)
+        if verdict.should_normalize:
+            log.debug(
+                "[brain_v10] respuesta degradada en primer turno "
+                f"(kind={verdict.failure_kind} signal={verdict.failure_signal} "
+                f"score={verdict.quality_score:.2f}) → aplicando normalize"
+            )
             return original_fn(self, response, clinic, personality, user_msg, history)
 
-        log.debug("[brain_v10] respuesta LLM OK en primer turno → bypass normalize")
+        log.debug(
+            "[brain_v10] respuesta LLM OK en primer turno "
+            f"(score={verdict.quality_score:.2f}) → bypass normalize"
+        )
         return response
 
     return llm_first_normalize

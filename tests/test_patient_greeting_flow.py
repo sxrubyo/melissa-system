@@ -293,6 +293,42 @@ def test_brain_v10_normalize_wrapper_does_not_bypass_low_quality_first_turn() ->
     assert calls == [("hola! Soy Melissa, la asistente virtual. hoy?", "hola")]
 
 
+def test_brain_v10_assess_llm_first_response_accepts_meaningful_greeting() -> None:
+    import melissa_brain_v10 as brain_v10
+
+    verdict = brain_v10.assess_llm_first_response(
+        "Hola, aquí estoy. Dime qué te gustaría revisar. ||| Si es botox, te ubico."
+    )
+
+    assert verdict["failure_kind"] == "ok"
+    assert verdict["should_normalize"] is False
+    assert verdict["should_fallback"] is False
+    assert verdict["quality_score"] >= verdict["quality_threshold"]
+
+
+def test_brain_v10_assess_llm_first_response_exposes_threshold_failure_contract() -> None:
+    import melissa_brain_v10 as brain_v10
+
+    verdict = brain_v10.assess_llm_first_response("hola! Soy Melissa, la asistente virtual. hoy?")
+
+    assert verdict["failure_kind"] == "below_threshold"
+    assert verdict["failure_signal"] == "low_quality_first_turn"
+    assert verdict["below_threshold"] is True
+    assert verdict["fallback_triggers"] == ["empty", "exception", "below_threshold"]
+    assert verdict["should_fallback"] is True
+
+
+def test_brain_v10_assess_llm_first_response_flags_exceptions_for_fallback() -> None:
+    import melissa_brain_v10 as brain_v10
+
+    verdict = brain_v10.assess_llm_first_response(None, exception=RuntimeError("boom"))
+
+    assert verdict["failure_kind"] == "exception"
+    assert verdict["failure_signal"] == "RuntimeError"
+    assert verdict["should_normalize"] is True
+    assert verdict["should_fallback"] is True
+
+
 def test_normalize_first_contact_response_rewrites_bad_greeting_followup() -> None:
     module = load_melissa_module()
 

@@ -111,6 +111,34 @@ except ImportError:
     def build_demo_domino_payload(*args, **kwargs):
         raise RuntimeError("melissa_domino.py no disponible")
 
+try:
+    from smart_handoff import handoff_manager, handle_handoff_admin_command
+    _SMART_HANDOFF = True
+except ImportError:
+    _SMART_HANDOFF = False
+    handoff_manager = None
+    async def handle_handoff_admin_command(*a, **kw): return None
+# ── BLACK ONE PATCHES — pitch inteligente + fix de cortes + Black One ────────
+try:
+    from melissa_pitch_upgrade import (
+        patch_creator_identity,
+        is_prospect_confused,
+        build_prospect_pitch_system_prompt,
+        fix_creator_in_response,
+    )
+    from melissa_send_guard import SendGuard, check_proactive_handoff
+    from melissa_nuke_robot_phrases import apply_patch as _nuke_robot_apply
+    patch_creator_identity()
+    _nuke_robot_apply()
+    _BLACKONE_PATCHES = True
+except Exception as _e:
+    _BLACKONE_PATCHES = False
+    logging.getLogger("melissa").warning(f"[black_one_patches] no cargado: {_e}")
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+
+
 # Nova governance bridge (optional — degrades safely if not installed)
 try:
     from nova_bridge import (
@@ -3128,7 +3156,7 @@ class Config:
     # ── MODO DEMO ─────────────────────────────────────────────────────────────
     # Actívalo con: melissa demo  (nunca pide token, responde inmediato)
     DEMO_MODE          = os.getenv("DEMO_MODE", "false").lower() == "true"
-    DEMO_BUSINESS_NAME = os.getenv("DEMO_BUSINESS_NAME", "Clínica Demo")
+    DEMO_BUSINESS_NAME = os.getenv("DEMO_BUSINESS_NAME", "tu negocio")
     DEMO_SECTOR        = os.getenv("DEMO_SECTOR", "estetica")
     DEMO_SESSION_TTL   = int(os.getenv("DEMO_SESSION_TTL", "1800"))  # 30 min por persona
     GREETING_ONLY_IDLE_SECONDS = int(os.getenv("GREETING_ONLY_IDLE_SECONDS", "300"))
@@ -3181,7 +3209,12 @@ class Config:
     
     # Modelos LLM (cascada de calidad)
     LLM_MODELS = {
-        "reasoning": os.getenv("LLM_REASONING", "google/gemini-2.5-flash"),
+        # FIX: "reasoning" usaba el mismo modelo que "fast" (gemini-2.5-flash),
+        # lo que hacía que los intentos de reparación de calidad no escalaran
+        # a un modelo más capaz. Ahora "reasoning" usa gemini-2.5-pro para que
+        # el segundo y tercer intento del quality_chain tengan más inteligencia.
+        # Para volver a Flash en reasoning: setear LLM_REASONING=google/gemini-2.5-flash en .env
+        "reasoning": os.getenv("LLM_REASONING", "google/gemini-2.5-pro"),
         "fast": os.getenv("LLM_FAST", "google/gemini-2.5-flash"),
         "lite": os.getenv("LLM_LITE", "google/gemini-2.5-flash-lite"),
         "embedding": os.getenv("LLM_EMBEDDING", "openai/text-embedding-3-small"),
@@ -6435,7 +6468,7 @@ class DatabaseManager:
                              'admin_chat_ids', 'notification_settings']:
                     try:
                         data[field] = json.loads(data.get(field, '{}') or '{}')
-                    except:
+                    except Exception:
                         data[field] = {} if field not in ['services', 'holidays', 'promotions', 'admin_chat_ids'] else []
                 return data
             return {}
@@ -6483,7 +6516,7 @@ class DatabaseManager:
             item = {"role": r["role"], "content": r["content"]}
             try:
                 item["analysis"] = json.loads(r["analysis"] or "{}")
-            except:
+            except Exception:
                 item["analysis"] = {}
             item["ts"] = r["ts"]
             history.append(item)
@@ -6507,7 +6540,7 @@ class DatabaseManager:
                 for field in ['preferences', 'tags', 'services_used']:
                     try:
                         data[field] = json.loads(data.get(field, '{}') or '{}')
-                    except:
+                    except Exception:
                         data[field] = {} if field == 'preferences' else []
                 return data
             else:
@@ -7358,8 +7391,8 @@ class GeminiProvider(LLMProvider):
     """Google Gemini directo. Soporta rotacion de claves."""
     name = "gemini"
     BASE  = "https://generativelanguage.googleapis.com/v1beta"
-    MDLS  = {"reasoning": "gemini-2.5-flash",
-              "fast":      "gemini-2.5-flash",
+    MDLS  = {"reasoning": "gemini-2.5-pro",        # Pro para razonamiento complejo
+              "fast":      "gemini-2.5-flash",      # Flash para velocidad
               "lite":      "gemini-2.5-flash-lite"}
 
     def __init__(self, key: str, label: str = "gemini"):
@@ -8787,7 +8820,7 @@ class ResponseGenerator:
         clinic_name = (clinic.get("name") or "").strip()
         agent_name = (getattr(personality, "name", "") or "Melissa").strip()
         if clinic_name:
-            return f"Hola, soy {agent_name}, la asesora virtual de {clinic_name}"
+            return f"Hola, soy {agent_name}, la asesora virtual"
         return f"Hola, soy {agent_name}, la asesora virtual"
 
     def _build_first_contact_follow_up(self, clinic: Dict) -> str:
@@ -8971,7 +9004,7 @@ class ResponseGenerator:
             return "Te ayudo a revisar disponibilidad o a dejar la cita encaminada. Cuéntame qué fecha o servicio te interesa."
 
         if is_estetica:
-            return "Cuéntame qué te gustaría mejorar o qué tratamiento estás mirando, y te ubico rápido."
+            return "Cuéntame qué te gustaría mejorar y te ayudo con eso."
 
         return "Cuéntame qué estás buscando y te ubico rápido."
 
@@ -9498,80 +9531,26 @@ cliente: lo vi en redes y me llamó la atención
         else:
             response = _humanize(response)
 
-        # Eliminar frases robóticas que se cuelan pese al prompt
-        _robot_phrases = [
-            "Con mucho gusto", "con mucho gusto",
-            "Encantada de conocerte", "encantada de conocerte",
-            "Encantado de conocerte", "encantado de conocerte",
-            "Es un placer atenderte", "es un placer atenderte",
-            "Fue un placer", "fue un placer",
-            "En qué más le puedo servir", "en qué más le puedo servir",
-            "En qué más puedo ayudarte", "en qué más puedo ayudarte",
-            "Estoy aquí para ayudarte", "estoy aquí para ayudarte",
-            "Por supuesto,", "por supuesto,",
-            "¡Por supuesto!", "¡por supuesto!",
-            "Definitivamente", "definitivamente",
-            "Absolutamente", "absolutamente",
-            " — ", " —",
-            # Relleno colombiano
-            "Claro que sí,", "claro que sí,",
-            "Claro que si,", "claro que si,",
-            "Con gusto te ayudo", "con gusto te ayudo",
-            "Con gusto te cuento", "con gusto te cuento",
-            "Me alegra que preguntes", "me alegra que preguntes",
-            "Perfecto, entiendo", "perfecto, entiendo",
-            "Te cuento que", "te cuento que",
-            "Lo que pasa es que", "lo que pasa es que",
-            "En ese sentido,", "en ese sentido,",
-            "De hecho,", "de hecho,",
-            "Con todo gusto", "con todo gusto",
-            "Claro, con gusto", "claro, con gusto",
-            # Frases IA/chatbot que delatan que es un bot
-            "Como asistente virtual", "como asistente virtual",
-            "No tengo emociones", "no tengo emociones",
-            "No te preocupes", "no te preocupes",
-            "Mi programación", "mi programación",
-            "He procesado tu consulta", "he procesado tu consulta",
-            "Tu solicitud ha sido", "tu solicitud ha sido",
-            "Espero haber sido de ayuda", "espero haber sido de ayuda",
-            "No dudes en preguntar", "no dudes en preguntar",
-            "Estoy a tu disposición", "estoy a tu disposición",
-            "Quedo a tu disposición", "quedo a tu disposición",
-            "Cualquier consulta adicional", "cualquier consulta adicional",
-            "Para mayor información", "para mayor información",
-            "En qué te puedo ayudar", "en qué te puedo ayudar",
-            "En qué puedo ayudarte", "en qué puedo ayudarte",
-            "Cómo puedo ayudarte", "cómo puedo ayudarte",
-            "Hola, en qué te puedo ayudar", "hola, en qué te puedo ayudar",
-            "Hola, en qué puedo ayudarte", "hola, en qué puedo ayudarte",
-            "Cuéntame cómo puedo ayudarte", "cuéntame cómo puedo ayudarte",
-            "Espero tu respuesta", "espero tu respuesta",
-            "Sin más por el momento", "sin más por el momento",
-            "Saludos cordiales", "saludos cordiales",
-            "Atentamente", "atentamente",
-            "Afectuosamente", "afectuosamente",
-            # Muletillas de relleno formal
-            "En primer lugar,", "en primer lugar,",
-            "En segundo lugar,", "en segundo lugar,",
-            "Por otro lado,", "por otro lado,",
-            "Adicionalmente,", "adicionalmente,",
-            "Asimismo,", "asimismo,",
-            "No obstante,", "no obstante,",
-            "Sin embargo,", "sin embargo,",
-            "Cabe mencionar", "cabe mencionar",
-            "Cabe destacar", "cabe destacar",
-            "Es importante mencionar", "es importante mencionar",
-            "Es importante destacar", "es importante destacar",
-            "Quiero informarte", "quiero informarte",
-            "Me complace informarte", "me complace informarte",
-            "Nos complace", "nos complace",
+        # PATCH: filtro de frases eliminado.
+        # El system prompt (V11 PROMPT-FIRST) le indica al LLM qué NO decir
+        # ANTES de generarlo. El reemplazo postproceso causaba cortes de respuesta
+        # porque borraba invitaciones de cierre dejando burbujas incompletas.
+        # Solo se conservan las 3 señales que delatan explícitamente "soy una IA":
+        _robot_phrases_minimal = [
+            "como modelo de lenguaje",
+            "como inteligencia artificial",
+            "mis capacidades incluyen",
         ]
-        for phrase in _robot_phrases:
-            if phrase in response:
-                # Eliminar la frase y limpiar espacios dobles
-                response = response.replace(phrase, "").strip()
-                response = re.sub(r'\s+', ' ', response).strip()
-                response = re.sub(r'^\s*,\s*', '', response)  # quitar coma inicial
+        for phrase in _robot_phrases_minimal:
+            if phrase in response.lower():
+                idx = response.lower().find(phrase)
+                # Solo borrar si está al inicio o al final de una burbuja
+                in_start = idx < 30
+                in_end = idx > len(response) - len(phrase) - 20
+                if in_start or in_end:
+                    response = response[:idx] + response[idx + len(phrase):]
+                    response = re.sub(r'\s+', ' ', response).strip()
+                    response = re.sub(r'^\s*,\s*', '', response)
 
         return response
 
@@ -11401,7 +11380,7 @@ class MCPManager:
         for pid, plugin in self.plugins.items():
             try:
                 results[pid] = await plugin.health_check()
-            except:
+            except Exception:
                 results[pid] = False
         return results
 
@@ -12760,6 +12739,28 @@ class MelissaUltra:
             log.warning(f"[melissa_core] fallo en handle(): {exc}")
         return None
 
+    def _llm_runtime_available(self) -> bool:
+        """Indica si Melissa tiene un runtime LLM utilizable para priorizarlo sobre fallbacks."""
+        try:
+            if llm_engine:
+                return True
+        except Exception:
+            pass
+        try:
+            generator = getattr(self, "generator", None)
+            if generator and getattr(generator, "llm", None):
+                return True
+        except Exception:
+            pass
+        provider_keys = (
+            getattr(Config, "GEMINI_API_KEY", ""),
+            getattr(Config, "GEMINI_API_KEY_2", ""),
+            getattr(Config, "GEMINI_API_KEY_3", ""),
+            getattr(Config, "OPENROUTER_API_KEY", ""),
+            getattr(Config, "GROQ_API_KEY", ""),
+        )
+        return any(bool(key) for key in provider_keys)
+
     def _handle_patient_meta_question(
         self,
         clinic: Dict,
@@ -12838,11 +12839,15 @@ class MelissaUltra:
         if normalized_demo_name in {"clinica demo", "clínica demo", "demo", "nova"}:
             configured_demo_name = ""
 
-        if clinic_name.lower() == "nova":
-            demo_clinic["name"] = configured_demo_name or "la clínica"
-
-        if not str(demo_clinic.get("name") or "").strip():
-            demo_clinic["name"] = configured_demo_name or "la clínica"
+        # FIX: En modo demo para leads nuevos (sin negocio conocido), NO mostrar nombre de negocio
+        # Solo usar DEMO_BUSINESS_NAME si es un negocio real configurado, no "demo" genérico
+        if Config.DEMO_MODE and configured_demo_name and normalized_demo_name not in {"clinica demo", "clínica demo", "demo", "nova"}:
+            demo_clinic["name"] = configured_demo_name
+        elif clinic_name.lower() == "nova":
+            demo_clinic["name"] = "la clínica"
+        elif not clinic_name.strip():
+            # En demo mode para leads nuevos, usar "tu clínica" en vez de nombre específico
+            demo_clinic["name"] = "la clínica"
 
         if not sector or sector == "otro":
             demo_clinic["sector"] = env_sector or "estetica"
@@ -12856,17 +12861,55 @@ class MelissaUltra:
         if not normalized:
             return False
 
-        service_context_markers = (
+        owner_exceptions = (
+            "config", "demo", "prueba", "probar", "entrenar", "enseñar",
+            "cómo funcionas", "como funcionas", "qué haces", "que haces",
+            "quiero una demo", "quiero demo", "hagamos una demo", "simulacion",
+            "simulación", "modo demo", "tengo un negocio", "tengo una empresa",
+        )
+        if any(exc in normalized for exc in owner_exceptions):
+            return False
+
+        if any(marker in normalized for marker in ("5 x 4", "5x4", "capital de francia", "capital de")):
+            return False
+        if any(
+            marker in normalized
+            for marker in (
+                "cuanto es",
+                "cuánto es",
+                "quien te hizo",
+                "quién te hizo",
+                "para que",
+                "para qué",
+                "aceptas audios",
+                "aceptas pdf",
+            )
+        ):
+            return False
+
+        # Keywords de cliente/lead (mensaje de alguien preguntando como cliente)
+        client_intent_markers = (
+            # Servicios
             "botox", "relleno", "rellenos", "laser", "láser", "facial",
             "tratamiento", "tratamientos", "procedimiento", "procedimientos",
             "cita", "agenda", "agendar", "disponibilidad", "valoracion", "valoración",
             "consulta", "sesion", "sesión", "toxina", "hifu", "prp", "hidrafacial",
+            # Precios
+            "precio", "costo", "cuánto", "cuanto", "vale", "tarifa",
+            # Ubicación/horario
+            "horario", "hora", "abierta", "abierto", "cerrado", "ubicación", "dirección",
+            # Agendamiento
+            "reservar", "reserva", "mañana", "hoy", "viernes", "lunes", "sábado",
+            "tarde", "noche", "pronto", "primavera", "urgencia", "emergencia",
+            # generic lead
+            "tengo", "quiero", "necesito", "busco", "me interesa", "información",
+            "saber", "acerca", "sobre", "qué tienen", "que tienen", "servicios",
         )
-        if any(marker in normalized for marker in ("5 x 4", "5x4", "capital de francia", "capital de")):
-            if not any(token in normalized for token in service_context_markers):
-                return False
-        if any(marker in normalized for marker in ("cuanto es", "cuánto es", "que es", "qué es")):
-            if not any(token in normalized for token in service_context_markers):
+        if any(token in normalized for token in client_intent_markers):
+            return True
+
+        if any(marker in normalized for marker in ("cuanto es", "cuánto es", "cuanto cuestas", "cuánto cuestas", "cuanto vale", "cuánto vale", "que es", "qué es")):
+            if not any(token in normalized for token in client_intent_markers):
                 return False
 
         owner_demo_markers = (
@@ -12898,6 +12941,15 @@ class MelissaUltra:
             "como te hicieron",
             "cómo te hicieron",
             "aceptas audios",
+            # Prospect B2B markers (solo para pregunta de precio, NO para cambiar el flujo de demo)
+            "cuanto cuestas",
+            "cuánto cuestas",
+            "cuanto cobras",
+            "cuánto cobras",
+            "cuanto vale",
+            "cuánto vale",
+            "me mandaron",
+            "me pasaron",
             "aceptas audio",
             "aceptas pdf",
             "lees pdf",
@@ -13208,7 +13260,7 @@ class MelissaUltra:
             # Cuando DEMO_MODE está activo, cualquier no-admin entra al flujo
             # demo aunque la instancia ya esté configurada.
             if Config.DEMO_MODE and not is_admin:
-                return await self._handle_demo_message(chat_id, text, clinic)
+                return await self._handle_demo_message(chat_id, text, clinic, attachments=attachments)
             # ─────────────────────────────────────────────────────────────────
 
             if attachments and is_admin:
@@ -13234,7 +13286,8 @@ class MelissaUltra:
             analysis = self.analyzer.analyze(text, history)
 
             scope_mode, effective_text = _patient_message_scope(text, clinic)
-            if scope_mode == "meta":
+            llm_runtime_ready = self._llm_runtime_available()
+            if scope_mode == "meta" and not llm_runtime_ready:
                 meta_bubbles = self._handle_patient_meta_question(clinic, chat_id=chat_id, user_msg=text, history=history)
                 meta_response = " ||| ".join(meta_bubbles)
                 db.save_message(
@@ -13254,7 +13307,7 @@ class MelissaUltra:
                 db.record_metric("conversation", "response_time", (time.time() - start_time) * 1000)
                 db.record_metric("conversation", "intent", 1, {"intent": analysis.intent.name})
                 return meta_bubbles
-            if scope_mode == "off_topic":
+            if scope_mode == "off_topic" and not llm_runtime_ready:
                 offtopic_bubbles = self._handle_patient_off_topic(clinic, chat_id=chat_id, user_msg=text)
                 offtopic_response = " ||| ".join(offtopic_bubbles)
                 db.save_message(
@@ -13289,13 +13342,15 @@ class MelissaUltra:
                     db.save_message(chat_id, "assistant", " ||| ".join(pref_reply))
                     return pref_reply
 
-            core_bubbles = self._try_conversation_core(
-                clinic=clinic,
-                user_msg=text,
-                history=history,
-                is_admin=False,
-                channel=str(route_info.get("platform") or ""),
-            )
+            core_bubbles = None
+            if not llm_runtime_ready:
+                core_bubbles = self._try_conversation_core(
+                    clinic=clinic,
+                    user_msg=text,
+                    history=history,
+                    is_admin=False,
+                    channel=str(route_info.get("platform") or ""),
+                )
             if core_bubbles:
                 personality = self.generator._get_default_personality(clinic)
                 response = " ||| ".join(core_bubbles)
@@ -13704,7 +13759,8 @@ class MelissaUltra:
     ]
 
     async def _handle_demo_message(self, chat_id: str, text: str,
-                                    clinic: Dict) -> List[str]:
+                                    clinic: Dict,
+                                    attachments: Optional[List[Dict[str, Any]]] = None) -> List[str]:
         """
         MODO DEMO v3 — Experiencia de intriga progresiva.
         Melissa NO se presenta como IA ni da un pitch.
@@ -13713,6 +13769,51 @@ class MelissaUltra:
         """
         import base64 as _b64
         import random as _r
+        attachments = attachments or []
+
+        # ── Extracción de texto de documentos adjuntos ───────────────────────
+        # Si el owner manda un PDF/doc sin caption, extraemos su texto y lo
+        # usamos como si hubiera sido escrito en el mensaje.
+        _doc_extracted_text = ""
+        _has_incoming_doc = False
+        for _att in attachments:
+            _att_kind = _att.get("kind", "")
+            _att_mime = _att.get("mime_type", "")
+            _is_doc = _att_kind == "document" or "pdf" in _att_mime or "text" in _att_mime or "word" in _att_mime or "docx" in _att_mime
+            if not _is_doc and _att_kind not in ("document",):
+                continue
+            _has_incoming_doc = True
+            # Intentar extraer texto del binario
+            try:
+                _raw = _att.get("bytes") or b""
+                if not _raw and _att.get("base64"):
+                    _raw = _b64.b64decode(_att["base64"])
+                if not _raw and _att.get("file_id") and _att.get("platform") == "telegram":
+                    _raw, _ = await self._download_telegram_binary(_att["file_id"])
+                if not _raw and _att.get("media_id") and _att.get("platform") == "whatsapp_cloud":
+                    _raw, _, _ = await self._download_whatsapp_cloud_binary(_att["media_id"])
+                if _raw:
+                    try:
+                        import pdfplumber as _pp, io as _io
+                        with _pp.open(_io.BytesIO(_raw)) as _pdf:
+                            _pages = [p.extract_text() or "" for p in _pdf.pages[:6]]
+                            _doc_extracted_text = "\n".join(filter(None, _pages))[:2000]
+                    except Exception:
+                        # Fallback: intentar leer como texto plano
+                        try:
+                            _doc_extracted_text = _raw.decode("utf-8", errors="ignore")[:2000]
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            break  # Solo procesamos el primer documento
+
+        # Si llegó un doc, enriquecemos el texto con su contenido extraído
+        if _has_incoming_doc and not text.strip():
+            if _doc_extracted_text.strip():
+                text = f"[documento adjunto]\n{_doc_extracted_text.strip()}"
+            else:
+                text = "[documento adjunto]"
         if not hasattr(self, "_emoji_chats_off"):
             self._emoji_chats_off = set()
         now = time.time()
@@ -13761,6 +13862,7 @@ class MelissaUltra:
         persona        = self._demo_sessions.get(bpersona_key, "amigable")
         demo_model_pref= self._demo_sessions.get(bmodel_key, "auto")  # auto|groq|gemini|openrouter
         sim_mode_active = bool(self._demo_sessions.get(bsim_key, False))
+        llm_runtime_ready = self._llm_runtime_available()
 
         def _save(role, msg):
             if db:
@@ -13769,16 +13871,45 @@ class MelissaUltra:
                 except Exception:
                     pass
 
+        # ── SEND GUARD — pitch inteligente + fix de cortes ──────────────────
+        _guard = None
+        if _BLACKONE_PATCHES:
+            try:
+                _guard = SendGuard(context="demo", business_name=business_name)
+            except Exception:
+                _guard = None
+
+        # Smart handoff proactivo ANTES del LLM (prospecto quiere hablar con humano)
+        if _BLACKONE_PATCHES and _guard:
+            try:
+                _proactive = _guard.check_handoff(text, history)
+                if _proactive and _SMART_HANDOFF and handoff_manager:
+                    _save("user", text)
+                    _save("assistant", _proactive["suggested_reply"])
+                    return _send(_proactive["suggested_reply"])
+            except Exception:
+                pass
+        # ──────────────────────────────────────────────────────────────────────
+
         def _send(r):
             _demo_archetype = self._demo_sessions.get(btone_key + "_arch", "amigable")
+            # BUG FIX: En DEMO_MODE, usar DEMO_BUSINESS_NAME como fallback
+            _demo_name = business_name if business_name else (Config.DEMO_BUSINESS_NAME if Config.DEMO_MODE else clinic.get("name", ""))
             _demo_clinic = self._build_demo_patient_clinic(
                 {
                     **clinic,
-                    "name": business_name or clinic.get("name", ""),
+                    "name": _demo_name,
                     "sector": clinic.get("sector") or Config.DEMO_SECTOR,
                 }
             )
             _is_first_demo_turn = not any(m.get("role") == "assistant" for m in history)
+            # Fix Black One / BlackBoss + cortes ANTES de procesar
+            if _BLACKONE_PATCHES:
+                try:
+                    r = fix_creator_in_response(r)
+                    r = _guard.clean(r) if _guard else r
+                except Exception:
+                    pass
             r = v8_process_response(r, chat_id=chat_id, archetype=_demo_archetype)
             should_normalize_first_turn = _is_first_demo_turn and (
                 bool(business_name) or self._demo_should_use_patient_chat_path(text)
@@ -13830,6 +13961,28 @@ class MelissaUltra:
                     parts[0] = "hola, " + parts[0][0].lower() + parts[0][1:]
             return " ||| ".join(parts)
 
+        _business_confirmation_signals = (
+            "sí ese es", "si ese es", "ese sí", "ese si", "ese mismo", "correcto ese",
+            "sí, ese", "si, ese", "exacto", "sí es ese", "si es ese",
+            "sí", "si", "sip", "claro", "correcto", "ese", "eso", "yes", "yep",
+            "ajá", "aja", "dale", "listo", "así es", "asi es", "es ese", "ese es", "exactamente",
+            "sí señor", "si señor", "siii", "siiii", "siiiii", "sii",
+            "somos nosotros", "somos esos", "somos ese", "ese somos", "eso somos",
+            "somos esa", "esa somos", "si somos nosotros", "sí somos nosotros",
+            "es de nosotros", "ese es nuestro", "es nuestro", "eso es nuestro",
+            "eso somos nosotros", "esos somos", "ese sí somos", "ese si somos",
+            "claro que sí somos", "claro que si somos", "somos el negocio", "somos esa clínica",
+        )
+
+        def _looks_like_business_confirmation(raw_text: str) -> bool:
+            normalized = _normalize_conv_text(raw_text or "")
+            if not normalized:
+                return False
+            return any(
+                normalized == signal or (len(signal) > 6 and signal in normalized)
+                for signal in _business_confirmation_signals
+            )
+
         # ── FIX v10: Reset check ANTES del conversation core ─────────────────────
         # Bug v9: _try_conversation_core corría primero y el LLM recibía "reset"
         # como mensaje normal → generaba respuestas incoherentes ("Hoy?", etc.)
@@ -13867,6 +14020,21 @@ class MelissaUltra:
             demo_channel = str(Config.PLATFORM or "")
 
         _pre_text_low = text.lower().strip()
+
+        # ── PITCH INTELIGENTE — prospecto B2B confundido ─────────────────────
+        if _BLACKONE_PATCHES:
+            try:
+                if is_prospect_confused(text, history):
+                    self._demo_sessions[sk + "_pitch_mode"] = True
+                # BUG FIX: forzar pitch para preguntas específicas que is_prospect_confused no detecta
+                elif any(q in text.lower() for q in ("que harias", "qué harías", "que harias en", "qué harías en")):
+                    self._demo_sessions[sk + "_pitch_mode"] = True
+                else:
+                    self._demo_sessions.pop(sk + "_pitch_mode", None)
+            except Exception:
+                pass
+        # ─────────────────────────────────────────────────────────────────────
+
         _pre_core_blockers = (
             "hagamos una demo",
             "hagamos la demo",
@@ -13906,6 +14074,7 @@ class MelissaUltra:
             and not self._demo_should_use_patient_chat_path(text)
             and not _pre_text_low.startswith("/")
             and not any(marker in _pre_text_low for marker in _pre_core_blockers)
+            and not llm_runtime_ready
         ):
             demo_core_bubbles = self._try_conversation_core(
                 clinic={
@@ -14036,7 +14205,7 @@ class MelissaUltra:
             return llm_engine or (_generator.llm if _generator else None)
 
         # ── Helpers locales ───────────────────────────────────────────────────
-        async def _llm(sys_p, usr_p, temp=0.82, max_t=250, model_tier="fast"):
+        async def _llm(sys_p, usr_p, temp=0.82, max_t=8192, model_tier="fast"):  # Sin límite — Gemini 2.5 soporta hasta 65k output tokens
             msgs = [{"role":"system","content":sys_p},{"role":"user","content":usr_p}]
             try:
                 eng = _get_demo_engine()
@@ -14055,7 +14224,28 @@ class MelissaUltra:
                 log.error(f"[demo] llm error: {e}")
                 return None
 
-        async def _llm_conv(sys_p, temp=0.85, max_t=180, model_tier="fast", recent_limit=12):
+        async def _llm_conv_pitch(temp=0.85, max_t=8192, recent_limit=12):
+            """LLM con el pitch de Black One para prospectos confundidos."""
+            try:
+                pitch_sys = build_prospect_pitch_system_prompt(business_name)
+            except Exception:
+                return None
+            msgs = [{"role": "system", "content": pitch_sys}]
+            for m in history[-recent_limit:]:
+                msgs.append({"role": m["role"], "content": m["content"]})
+            msgs.append({"role": "user", "content": text})
+            try:
+                eng = _get_demo_engine()
+                if not eng: raise RuntimeError("LLM no init")
+                r, meta = await eng.complete(msgs, model_tier="fast", temperature=temp, max_tokens=max_t, use_cache=False)
+                log.info(f"[demo][pitch] {meta.get('provider','?')}")
+                _generator = getattr(self, "generator", None)
+                return _generator._postprocess(r, PersonalityProfile()) if _generator else r
+            except Exception as e:
+                log.error(f"[demo][pitch] error: {e}")
+                return None
+
+        async def _llm_conv(sys_p, temp=0.85, max_t=8192, model_tier="fast", recent_limit=12):  # Sin límite — Gemini 2.5 soporta hasta 65k output tokens
             msgs = [{"role":"system","content":sys_p}]
             for m in history[-recent_limit:]:
                 msgs.append({"role":m["role"],"content":m["content"]})
@@ -14083,7 +14273,7 @@ class MelissaUltra:
             validator,
             repair_instructions: str,
             temp: float = 0.72,
-            max_t: int = 180,
+            max_t: int = 8192,  # Sin límite — Gemini 2.5 necesita espacio para pensar
             model_tier: str = "fast",
             recent_limit: int = 8,
         ) -> Tuple[Optional[str], bool]:
@@ -14129,14 +14319,25 @@ class MelissaUltra:
         def _send(r):
             # V8.0: aplicar AntiRobotFilter antes de guardar y enviar
             _demo_archetype = self._demo_sessions.get(btone_key + "_arch", "amigable")
+            # BUG FIX: En DEMO_MODE, usar DEMO_BUSINESS_NAME como fallback
+            _demo_name = business_name if business_name else (Config.DEMO_BUSINESS_NAME if Config.DEMO_MODE else clinic.get("name", ""))
             _demo_clinic = self._build_demo_patient_clinic(
                 {
                     **clinic,
-                    "name": business_name or clinic.get("name", ""),
+                    "name": _demo_name,
                     "sector": clinic.get("sector") or Config.DEMO_SECTOR,
                 }
             )
             _is_first_demo_turn = not any(m.get("role") == "assistant" for m in history)
+            # ── BLACK ONE: fix Black One + cortes antes de procesar ──────────
+            if _BLACKONE_PATCHES:
+                try:
+                    r = fix_creator_in_response(r)
+                    if _guard:
+                        r = _guard.clean(r)
+                except Exception:
+                    pass
+            # ─────────────────────────────────────────────────────────────────
             r = v8_process_response(r, chat_id=chat_id, archetype=_demo_archetype)
             should_normalize_first_turn = _is_first_demo_turn and (
                 bool(business_name) or self._demo_should_use_patient_chat_path(text)
@@ -14150,6 +14351,20 @@ class MelissaUltra:
                 )
             _save("assistant", r)
             bubbles = self._split_bubbles(r, chat_id=chat_id, archetype=_demo_archetype)
+            # FIX BUG 4: Si es el primer turno, el usuario saludó, y la respuesta tiene
+            # solo 1 burbuja sin pregunta de seguimiento → agregar burbuja de apertura.
+            # Esta lógica existía en la primera definición de _send (línea 13772) pero
+            # se perdió cuando se redefinió _send aquí en la misma función.
+            if should_normalize_first_turn and len(bubbles) == 1:
+                _text_norm = _normalize_conv_text(text or "")
+                _greeting_tokens = (
+                    "hola", "buenas", "buenas tardes", "buenos dias", "buenos días",
+                    "buenas noches", "hey", "holi",
+                )
+                if any(_text_norm == token or _text_norm.startswith(token + " ") for token in _greeting_tokens):
+                    lowered_bubble = _normalize_conv_text(bubbles[0] or "")
+                    if not any(token in lowered_bubble for token in ("cuentame", "cuéntame", "revisar", "ayudo", "ayudar")):
+                        bubbles.append("cuéntame qué te gustaría revisar")
             # Para premium/salud premium: restaurar mayúscula inicial
             tone = self._demo_sessions.get(btone_key, "GENERAL")
             if tone in ("SALUD PREMIUM", "PREMIUM"):
@@ -14186,12 +14401,14 @@ class MelissaUltra:
                 marker in normalized
                 for marker in (
                     "como estas", "cómo estás", "quien eres", "quién eres", "que eres", "qué eres",
-                    "que haces", "qué haces", "como funcionas", "cómo funcionas", "aceptas audios",
+                    "que haces", "qué haces", "que harias", "qué harías", "como funcionas", "cómo funcionas", "aceptas audios",
                     "aceptas pdf", "para que", "para qué", "quien te hizo", "quién te hizo",
                     "me mandaron tu numero", "me mandaron tu número", "quiero una demo", "quiero demo",
                     "quiero probarte", "tengo un negocio", "tengo una empresa", "hola", "buenas", "?",
                 )
             ):
+                return False
+            if _looks_like_business_confirmation(candidate):
                 return False
 
             words = re.findall(r"[A-Za-zÁÉÍÓÚáéíóúÑñ0-9&.'-]+", candidate)
@@ -14308,7 +14525,7 @@ class MelissaUltra:
                 detail_tokens = ("chat", "cliente", "demo", "tono", "responder", "whatsapp")
                 return not any(token in lowered_response for token in detail_tokens)
             if any(token in lowered_user for token in ("quien te hizo", "quién te hizo", "como tenerte", "cómo tenerte", "quien te creo", "quién te creó")):
-                return "blackboss" not in lowered_response or "3124348669" not in lowered_response
+                return "black one" not in lowered_response or "3124348669" not in lowered_response
             if any(token in lowered_user for token in ("audio", "audios", "nota de voz", "pdf", "archivo", "documento", "imagen")):
                 return not any(token in lowered_response for token in ("audio", "pdf", "documento", "imagen", "transcrib"))
             if any(token in lowered_user for token in ("me mandaron tu numero", "me mandaron tu número", "me pasaron tu numero", "me pasaron tu número", "que haces exactamente", "qué haces exactamente", "no entiendo que haces", "no entiendo qué haces")):
@@ -14451,7 +14668,7 @@ class MelissaUltra:
             validator,
             repair_instructions: str,
             temp: float = 0.76,
-            max_t: int = 240,
+            max_t: int = 8192,  # Sin límite — Pro necesita tokens para reasoning
             model_tier: str = "reasoning",
         ) -> Tuple[Optional[str], bool]:
             attempts = [
@@ -14513,7 +14730,7 @@ class MelissaUltra:
                     " ||| apenas me digas el nombre del negocio te muestro la demo bien aterrizada"
                 )
             if _biz:
-                return f"escríbeme como si fueras un cliente de {_biz} y arranco"
+                return f"Escríbeme algo como cliente de {_biz} y arranco"
             if any(
                 token in _user
                 for token in (
@@ -14568,7 +14785,7 @@ IDENTIDAD — NUNCA SALGAS DE ESTE PERSONAJE:
 - Cuando no tienes contexto de negocio todavía, igual respondes con seguridad y pides el nombre al final, una sola vez, de forma simple.
 
 REGLAS EXTRA DE ESTA DEMO:
-- si preguntan quién te hizo, quién te creó o cómo tener esto: responde que te hizo BlackBoss. Contacto: 3124348669. Persona: Santiago Rubio
+- si preguntan quién te hizo, quién te creó o cómo tener esto: responde que te hizo Black One. Contacto: 3124348669. Persona: Santiago Rubio
 - si preguntan si aceptas audios, notas de voz, imágenes, PDFs o documentos: responde que sí, cuando el canal lo soporte, puedes transcribir, leer y usar ese contenido
 - si te hacen una pregunta general fuera de contexto, respóndela bien primero y luego vuelve suave a la demo si hace sentido
 - si sospechan estafa o no quieren dar el nombre del negocio, baja la guardia y explica para qué lo pides sin sonar defensiva
@@ -14581,7 +14798,7 @@ REGLA DE ORO ANTI-CORTE (HUMANFIX):
 Cada respuesta DEBE terminar con una pregunta o invitación. NUNCA termines en afirmación seca.
 Si no sabes qué más decir, la última burbuja es siempre una de estas:
   - "cuál es el nombre de tu negocio para arrancar"
-  - "escríbeme como si fueras un cliente a ver qué pasa"
+  - "Escríbeme algo como si fueras un cliente y te respondo!"
   - "qué quieres revisar primero"
 Una respuesta de 1 sola burbuja sin "?" es una respuesta INCOMPLETA — agrégale la invitación.
 
@@ -14667,7 +14884,7 @@ EJEMPLOS DE RESPUESTAS BUENAS vs MALAS:
                 ]
             elif business_name:
                 cta_options = [
-                    "Si quieres probarme de verdad, escríbeme como si fueras un cliente y te respondo en contexto.",
+                    "Si quieres probarme de verdad, Escríbeme algo como cliente y te respondo en contexto.",
                     "Si quieres medirme bien, háblame como si fueras un cliente real y arrancamos.",
                 ]
             else:
@@ -14748,30 +14965,41 @@ EJEMPLOS DE RESPUESTAS BUENAS vs MALAS:
             return await _demo_owner_onboarding_reply()
 
         if not business_name and not detected_cmd and self._demo_should_use_patient_chat_path(text):
-            demo_patient_bubbles = self._try_conversation_core(
-                clinic=self._build_demo_patient_clinic(clinic),
-                user_msg=text,
-                # El historial de onboarding/demo contamina este salto y hace que
-                # mensajes como "botox" vuelvan al flujo de "dime tu negocio".
-                # Para una prueba tipo paciente sin negocio cargado, arrancamos limpio.
-                history=[],
-                is_admin=False,
-                channel=demo_channel,
-            )
+            demo_patient_bubbles = None
+            if not llm_runtime_ready:
+                demo_patient_bubbles = self._try_conversation_core(
+                    clinic=self._build_demo_patient_clinic(clinic),
+                    user_msg=text,
+                    # El historial de onboarding/demo contamina este salto y hace que
+                    # mensajes como "botox" vuelvan al flujo de "dime tu negocio".
+                    # Para una prueba tipo paciente sin negocio cargado, arrancamos limpio.
+                    history=[],
+                    is_admin=False,
+                    channel=demo_channel,
+                )
             if not demo_patient_bubbles:
-                demo_patient_prompt = """Eres Melissa atendiendo un chat real por WhatsApp.
-Todavía no necesitas saber el nombre del negocio para responder.
-Reglas:
-- no pidas el nombre del negocio
-- no menciones demo, prueba, onboarding ni que estás dentro de un negocio
-- responde como asesora virtual cálida y útil
-- si te preguntan quién eres, admite con naturalidad que eres una IA que atiende el chat
-- si solo te saludan, responde breve y natural y pregunta qué quieren revisar
-- si preguntan quién eres, explica tu función sin sonar a bot
-- si preguntan por citas, tratamientos o precios, oriéntalos y haz avanzar la conversación
-- usa 1 o 2 burbujas como máximo
+                demo_patient_prompt = """Eres Melissa, receptionistavirtual de un NEGOCIO NO ESPECIFICADO. El nombre del negocio te lo da el usuario en la conversación.
+
+REGLAS ABSOLUTAS - NO ROMPER NUNCA:
+1. NUNCA menciones ningún nombre de clínica específico como "Clinica Demo", "Clínica Las Américas", "Clinica Los Olivos" - NO EXISTEN
+2. NUNCA digas "asesora virtual de X" - solo di "asesora virtual" sin nombre
+3. NUNCA pidas el nombre del negocio - el usuario ya te lo dio
+4. NUNCAenvíes links de páginas web al usuario - NO puedes buscar Google
+5. Usa EMOJIS naturalmente
+
+RESPUESTAS PARA PREGUNTAS COMUNES:
+- Cuánto cuesta → "El precio lo define el especialista en la valoración. Agenda tu cita y ahí te dicen"
+- Cómo te contrato → "Para eso puedes hablar con Santiago al 3124348669 - él te explica todo"
+- Qué servicios → "Tenemos variedad de servicios. Cuál te interesa?"
+
+TONO: Cálido, profesional, como receptionistareal.
 """
                 raw_demo_patient = await _llm(demo_patient_prompt, text, temp=0.72, max_t=160)
+                
+                # Smart handoff: si la respuesta indica que no sabe, notificar a Santiago
+                if raw_demo_patient and any(phrase in raw_demo_patient.lower() for phrase in ["no sé", "no tengo", "no cuento con", "no puedo", "déjame consult", "no sé la", "no manejo"]):
+                    await smart_handoff_to_santiago(sk, text, raw_demo_patient[:300])
+                
                 raw_demo_patient_low = _normalize_conv_text(raw_demo_patient or "")
                 forbidden_demo_markers = (
                     "nombre del negocio",
@@ -14782,7 +15010,20 @@ Reglas:
                     "onboarding",
                 )
                 if raw_demo_patient and not any(marker in raw_demo_patient_low for marker in forbidden_demo_markers):
-                    demo_patient_bubbles = [part.strip() for part in re.split(r"\s*\|\|\|\s*", raw_demo_patient) if part.strip()]
+                    # Validar que no haya frases cortadas
+                    _raw_parts = [p.strip() for p in re.split(r"\s*\|\|\|\s*", raw_demo_patient) if p.strip()]
+                    _clean_parts = []
+                    for p in _raw_parts:
+                        # Descartar burbujas muy cortas o que terminan en palabras incompletas
+                        _short_tokens = p.split()
+                        if len(_short_tokens) < 3:
+                            continue
+                        if p.rstrip()[-1] in (' ', ',', ';'):
+                            continue
+                        if p.rsplit()[-1].lower() in ('de', 'en', 'con', 'para', 'que', 'y', 'o', 'el', 'la', 'un', 'una', 'me', 'te', 'se', 'le'):
+                            continue
+                        _clean_parts.append(p)
+                    demo_patient_bubbles = _clean_parts if _clean_parts else _raw_parts[:2]
             if demo_patient_bubbles:
                 _save("user", text)
                 return _send(" ||| ".join(demo_patient_bubbles))
@@ -14794,6 +15035,16 @@ Reglas:
             and not self._demo_should_use_patient_chat_path(text)
             and not _looks_like_business_name_candidate(text)
         ):
+            # BLACK ONE: Si el prospecto está confundido y pregunta qué hace Melissa,
+            # usar el pitch inteligente en vez del onboarding genérico
+            if _BLACKONE_PATCHES and self._demo_sessions.get(sk + "_pitch_mode"):
+                try:
+                    _pitch_r = await _llm_conv_pitch()
+                    if _pitch_r and _pitch_r.strip():
+                        _save("user", text)
+                        return _send(_pitch_r)
+                except Exception:
+                    pass
             explain_name = any(token in _text_low_pre for token in ("para que", "para qué", "por que", "por qué", "no te doy", "no quiero dar"))
             return await _demo_owner_onboarding_reply(explain_name=explain_name)
 
@@ -14951,6 +15202,25 @@ Reglas:
                 _save("user", nombre_raw)
                 return _send(_r.choice(["no te escuché ||| cómo se llama tu negocio","no entendí bien ||| dime el nombre de tu negocio o clínica","perdona, no te oí bien ||| cuál es el nombre del negocio"]))
 
+            # BUG FIX: Rechazar palabras que NO son nombres de negocio válidos
+            # Palabras genéricas que el sistema podría malinterpretar como búsquedas web
+            _invalid_business_names = {
+                "ayuda", "hola", "buenos", "buenas", "adios", "adiós", "gracias",
+                "info", "información", "precio", "precios", "cita", "citas",
+                "hora", "horario", "ubicación", "ubicacion", "direccion", "dirección",
+                "telefono", "teléfono", "whatsapp", "telegram", "contacto",
+                "botox", "relleno", "láser", "laser", "estética", "estetica",
+                "spa", "clinica", "clínica", "centro", "salón", "salon",
+                "doctor", "doctora", "profesional", "servicio", "servicios",
+            }
+            if nombre.lower().strip() in _invalid_business_names:
+                _save("user", nombre_raw)
+                return _send(_r.choice([
+                    "Necesito el nombre de tu negocio, no una palabra general. ¿Cómo se llama tu empresa o clínica?",
+                    "Para empezar, dime el nombre de tu negocio para personalizar las respuestas.",
+                    "¿Cuál es el nombre de tu negocio o marca? Así puedo atenderte mejor."
+                ]))
+
             self._demo_sessions[bname_key] = nombre
 
             # Búsqueda silenciosa — obtiene texto + URL del negocio
@@ -14990,6 +15260,9 @@ Reglas:
             self._demo_sessions[bfound_key] = found
             self._demo_sessions[burl_key]   = biz_url
             self._demo_sessions[blearn_key] = -1 if found else 0
+            business_name = nombre
+            business_ctx = search_info
+            found_online = found
 
             # Extraer datos clave del negocio para el prompt de activación
             if found and search_info:
@@ -15025,7 +15298,7 @@ Burbuja 2: deja claro que ya entiendes cómo tendría que sonar el chat — brev
   "ya me ubiqué con cómo tendría que hablar acá"
 
 Burbuja 3: invita a probarte como cliente real — con intriga, no como presentación.
-  "escríbeme como si fueras un cliente a ver qué pasa"
+  "Escríbeme algo como si fueras un cliente y te respondo!"
   O algo más específico al negocio si tiene sentido.
 
 SIN mayúscula inicial (a menos que sea nombre propio). Sin punto al final. Sin emojis. Sin ¿ ni ¡. Sin signos dobles de apertura. Sin frases de bot o asistente virtual.
@@ -15070,14 +15343,15 @@ Máximo 1 oración por burbuja. Natural y seguro."""
             )
             if not r:
                 if found:
-                    r = f"ya tengo {nombre} ||| ya me ubiqué con cómo tendría que sonar esto ||| escríbeme como si fueras un cliente a ver qué pasa"
+                    r = f"Ya tengo {nombre} y me alegré de ti! 😊 Listo, ya puedo atender a tus clientes como si fuera parte del equipo. Cómo quieres que probemos?"
                 else:
-                    # v11: no info → fallback limpio, sin emoji ni copy vieja
-                    r = (
-                        f"listo, ya me ubico con {nombre}"
-                        f" ||| no encontré info pública confiable todavía"
-                        f" ||| cuéntame a qué se dedica el negocio y qué ofrecen, y te muestro cómo respondería"
-                    )
+                    # v12: no info → opciones naturales, sin exponer estado interno
+                    _no_info_opts = [
+                        f"ya anoté {nombre} ||| cuéntame a qué se dedican y te muestro cómo respondería",
+                        f"listo, {nombre} ||| no los encuentro en Google todavía — cuéntame qué hacen y arrancamos",
+                        f"ya los tengo ||| igual puedo hacer la demo — escríbeme un poco de qué trata el negocio",
+                    ]
+                    r = _r.choice(_no_info_opts)
 
             # ── Burbuja extra: confirmación del link ─────────────────────────
             # Solo si encontramos info real (no cuando usamos el fallback de Google search)
@@ -15096,27 +15370,39 @@ Máximo 1 oración por burbuja. Natural y seguro."""
             return _send(r)
 
         # ── Confirmación positiva del link: "sí ese es / correcto / sí" ───────────
-        _url_confirm_signals = [
-            "sí ese es","si ese es","ese sí","ese mismo","correcto ese",
-            "sí, ese","si, ese","exacto","sí es ese","si es ese",
-            # Respuestas simples — el bot preguntó "¿es este?" y el usuario dice sí
-            "sí","si","sip","claro","correcto","ese","eso","yes","yep",
-            "ajá","aja","dale","listo","así es","es ese","ese es","exactamente",
-            "sí señor","si señor","así","ahí sí","ahí si","ahi si",
-        ]
         _biz_url = self._demo_sessions.get(burl_key, "")
         _text_clean = text.lower().strip().rstrip(".")
         _is_url_confirm = (
             business_name and found_online and _biz_url and
             len(history) <= 8 and
-            any(
-                _text_clean == sig or (len(sig) > 6 and sig in _text_clean)
-                for sig in _url_confirm_signals
-            )
+            _looks_like_business_confirmation(_text_clean)
         )
         if _is_url_confirm:
             _save("user", text)
-            return _send(_r.choice(["bacano, ya los tengo identificados ||| escríbeme como si fueras un cliente","perfecto ||| escríbeme como si fueras un cliente a ver qué pasa","listo, ya sé quiénes son ||| escríbeme como cliente"]))
+            return _send(_r.choice([
+                "bacano, ya los tengo identificados ||| Escríbeme algo como cliente",
+                "perfecto, ya me ubiqué ||| Escríbeme algo y te respondo!",
+                "buenísimo ||| ya sé quiénes son — arranquemos, Escríbeme como cliente",
+            ]))
+
+        _is_business_confirmation = (
+            business_name
+            and not detected_cmd
+            and not sim_mode_active
+            and not self._demo_should_use_patient_chat_path(text)
+            and _looks_like_business_confirmation(text)
+        )
+        if _is_business_confirmation:
+            _save("user", text)
+            if found_online and _biz_url:
+                return _send(
+                    "perfecto, ya te tengo ubicado"
+                    " ||| Escríbeme algo como cliente y te respondo en contexto"
+                )
+            return _send(
+                f"perfecto, ya tengo {business_name}"
+                " ||| Escríbeme algo como cliente y te muestro cómo respondería"
+            )
 
         # ── Detección de corrección: "no somos esos / te confundiste / no ese no" ──
         # Ocurre cuando Google encontró info incorrecta o el dueño responde "no" al link
@@ -15203,6 +15489,23 @@ Máximo 1 oración por burbuja. Natural y seguro."""
             _save("user", text)
             return _send("listo, ese no era ||| pásame el nombre correcto del negocio y sigo")
 
+        # ── PITCH MODE: preguntas de prospecto B2B ─────────────────────────────────────────
+        # Cuando el usuario pregunta sobre el servicio/pitch de Melissa - DETECTAR ANTES
+        if _BLACKONE_PATCHES and not business_name:
+            _prospect_service_questions = [
+                "que harias", "qué harías", "que harias en", "qué harías en",
+                "que haces", "qué haces",
+                "cuanto cuestas", "cuánto cuestas", "cuanto cobras", "cuánto cobras",
+                "cuanto vale", "cuánto vale", "que precio", "qué precio",
+                "planes", "tarifas", "costos", "como funcionas", "cómo funcionas",
+                "para que sirves", "para qué sirves", "que eres", "qué eres",
+                "me mandaron tu numero", "me mandaron tu número", "me pasaron tu numero",
+                "no entiendo que haces", "no entiendo qué haces", "no me interesa que actues",
+                "que servicios", "qué servicios", "como trabajas", "cómo trabajas",
+            ]
+            if any(q in text.lower() for q in _prospect_service_questions):
+                self._demo_sessions[sk + "_pitch_mode"] = True
+
         # ── Cambio de negocio en caliente: re-bind sin obligar a reset manual ──
         _current_business_norm = _normalize_conv_text(business_name or "")
         _candidate_business_norm = _normalize_conv_text(text or "")
@@ -15211,12 +15514,16 @@ Máximo 1 oración por burbuja. Natural y seguro."""
             and not sim_mode_active
             and not detected_cmd
             and _looks_like_business_name_candidate(text)
+            and not _looks_like_business_confirmation(text)
             and _candidate_business_norm
             and _candidate_business_norm != _current_business_norm
             and _candidate_business_norm not in _current_business_norm
             and _current_business_norm not in _candidate_business_norm
             and "?" not in text
             and not self._demo_should_use_patient_chat_path(text)
+            # FIX: no disparar cambio de negocio si acabamos de mandar un URL
+            # El usuario está respondiendo al link (ej. "siii somos nosotros"),
+            # no intentando cambiar de negocio
         )
         if _is_business_switch:
             keys_del = [k for k in list(self._demo_sessions) if k.startswith(sk + "_") and not k.endswith("_ts")]
@@ -15255,19 +15562,19 @@ Máximo 1 oración por burbuja. Natural y seguro."""
             _save("user", text)
             if found_online and _biz_url_found and not _is_fallback_found:
                 return _send(
-                    f"sí, los encontré ||| {_biz_url_found} ||| escríbeme como cliente a ver qué pasa"
+                    f"sí, los encontré ||| {_biz_url_found} ||| Escríbeme algo y te respondo!"
                 )
             elif found_online:
                 return _send(
                     f"sí, encontré información de {business_name} en internet"
-                    f" ||| ya me ubiqué — escríbeme como si fueras un cliente"
+                    f" ||| ya me ubiqué — Escríbeme algo como cliente"
                 )
             else:
                 _no_found_opts = [
                     f"honestamente no encontré mucho de {business_name} en internet todavía"
-                    f" ||| pero eso no le quita nada — escríbeme como cliente y te muestro",
+                    f" ||| pero eso no le quita nada — Escríbeme como cliente y te muestro",
                     f"no aparecen mucho en Google aún"
-                    f" ||| igual puedo mostrarte cómo trabajaría — escríbeme como cliente",
+                    f" ||| igual puedo mostrarte cómo trabajaría — Escríbeme como cliente",
                 ]
                 return _send(_r.choice(_no_found_opts))
 
@@ -15283,10 +15590,40 @@ Máximo 1 oración por burbuja. Natural y seguro."""
             and not sim_mode_active
             and not detected_cmd
             and not self._demo_should_use_patient_chat_path(text)
-            and any(sig in _normalize_conv_text(text or "") for sig in _owner_augment_signals)
+            and (
+                _has_incoming_doc  # un documento llegó → siempre es info del negocio
+                or any(sig in _normalize_conv_text(text or "") for sig in _owner_augment_signals)
+            )
         ):
             self._demo_sessions[blearn_key] = max(int(self._demo_sessions.get(blearn_key, -1)), 0)
             _save("user", text)
+            # Si hay texto extraído del doc, guardarlo en contexto y confirmar
+            if _has_incoming_doc:
+                if _doc_extracted_text.strip():
+                    _ctx_existing = self._demo_sessions.get(bctx_key, "")
+                    self._demo_sessions[bctx_key] = (_ctx_existing + " " + _doc_extracted_text[:1500]).strip()
+                    self._demo_sessions[bfound_key] = True
+                    self._demo_sessions[blearn_key] = -1  # salir del modo aprendizaje
+                    r = await _llm(
+                        f"""Eres Melissa. El dueño del negocio "{business_name}" te acaba de enviar un documento con info sobre su empresa.
+Contenido del documento (primeras líneas): "{_doc_extracted_text[:600]}"
+
+En 2-3 burbujas (|||) confirma que leíste el documento: menciona 1-2 datos concretos que viste.
+Luego invítalos a la simulación: "probemos — Escríbeme algo como cliente"
+Natural, sin punto al final, sin ¿¡, en minúscula.""",
+                        "confirmación de documento recibido", max_t=200
+                    )
+                    fallback = (
+                        f"perfecto, ya leí el documento de {business_name}"
+                        f" ||| ya sé de qué se tratan — probemos, Escríbeme algo como cliente"
+                    )
+                    return _send(r or fallback)
+                else:
+                    # Doc llegó pero no pudimos extraer texto (imagen, binario raro)
+                    return _send(
+                        "recibí el documento"
+                        " ||| no pude leerlo bien — ¿puedes mandarme el texto directo o un PDF con texto seleccionable?"
+                    )
             if any(token in _normalize_conv_text(text or "") for token in _doc_offer_tokens):
                 return _send(
                     "sí, me sirve"
@@ -15326,7 +15663,14 @@ Máximo 1 oración por burbuja. Natural y seguro."""
         )
 
         if _in_learn_mode:
-            if any(token in _normalize_conv_text(text or "") for token in _doc_offer_tokens):
+            if _has_incoming_doc and not _doc_extracted_text.strip():
+                # Doc llegó pero no se pudo leer — pedir reenvío en formato legible
+                _save("user", text)
+                return _send(
+                    "recibí el documento"
+                    " ||| no pude leerlo — ¿puedes mandarme un PDF con texto seleccionable, o pegarme el texto directo?"
+                )
+            if not _has_incoming_doc and any(token in _normalize_conv_text(text or "") for token in _doc_offer_tokens):
                 _save("user", text)
                 return _send(
                     "sí, me sirve"
@@ -15354,13 +15698,13 @@ Máximo 1 oración por burbuja. Natural y seguro."""
 Lo que te contaron: "{_ctx_manual[:400]}"
 
 Confirma en 2-3 burbujas (|||) que ya entendiste quiénes son — menciona 1-2 datos concretos que dijeron.
-Luego invítalos a la simulación: "arrancamos la prueba? escríbeme como si fueras un cliente"
+Luego invítalos a la simulación: "arrancamos la prueba? Escríbeme algo como cliente"
 Natural, sin punto al final, sin ¿¡, en minúscula.""",
                     "confirmación y propuesta de simulación", max_t=200
                 )
                 fallback = (
                     f"listo, ya entendí bien lo que hace {business_name} ||| "
-                    f"arrancamos? escríbeme como si fueras un cliente a ver qué pasa"
+                    f"arrancamos? Escríbeme algo como cliente a ver qué pasa"
                 )
                 return _send(r or fallback)
 
@@ -15461,7 +15805,7 @@ Sin punto final."""
                 max_t=120,
             )
             if not sim_reply:
-                sim_reply = "de una ||| escríbeme como si fueras un cliente real y yo ya caigo en el chat"
+                sim_reply = "de una ||| Escríbeme algo como cliente real y yo ya caigo en el chat"
             return _send(sim_reply)
 
         if business_name and not detected_cmd and (sim_mode_active or self._demo_should_use_patient_chat_path(text)):
@@ -15475,7 +15819,7 @@ Sin punto final."""
                     "vale hagamos una demo entonces",
                     "hagamos una demo",
                     "hagamos la demo",
-                    "de una escríbeme como si fueras un cliente real y yo ya caigo en el chat",
+                    "de una Escríbeme algo como cliente real y yo ya caigo en el chat",
                 }
             ]
             if found_online and business_ctx:
@@ -15535,9 +15879,9 @@ SI QUIEREN AGENDAR
 
 IDENTIDAD Y CREADOR — REGLA DURA
 - si preguntan quién te hizo, quién te creó, cómo conseguirte o de qué empresa eres: di exactamente esto
-  → "me hizo BlackBoss, una startup de software ||| la creó Santiago Rubio — contacto: 3124348669"
+  → "me hizo Black One, una empresa de software y gobernanza de agentes de IA ||| la creó Santiago Rubio — contacto: 3124348669"
 - NUNCA digas "Google", "Anthropic", "OpenAI" ni ningún proveedor de LLM como tu creador
-- tu creador es BlackBoss / Santiago Rubio, punto
+- tu creador es Black One / Santiago Rubio, punto
 """
             customer_history = sim_history[-8:]
             customer_had_output = False
@@ -15554,9 +15898,17 @@ IDENTIDAD Y CREADOR — REGLA DURA
             )
             if any(sig in _text_low_sim for sig in _creator_signals):
                 customer_reply = (
-                    "me hizo BlackBoss, una startup de software"
+                    "me hizo Black One, una empresa de software y gobernanza de agentes de IA"
                     " ||| la creó Santiago Rubio — si quieres algo así para tu negocio, el contacto es 3124348669"
                 )
+                # FIX BUG 5: restaurar history ANTES de llamar a _send.
+                # history fue cambiado a customer_history (últimos 8 mensajes) líneas arriba.
+                # Si retornamos sin restaurar, _send calcula _is_first_demo_turn con el
+                # historial truncado, lo que puede hacer que should_normalize_first_turn=True
+                # y pase la respuesta del creador por _normalize_first_contact_response,
+                # modificando o corrompiendo "me hizo Black One...".
+                # El finally: history = original_history NUNCA corre en esta ruta.
+                history = original_history
                 return _send(customer_reply)
 
             try:
@@ -15573,7 +15925,7 @@ IDENTIDAD Y CREADOR — REGLA DURA
 - si preguntan por cita o siguiente paso, muévelos directo hacia el agendado
 - si expresan miedo, valídalo y responde con seguridad
 - si preguntan si entiendes audios, notas de voz, PDFs, imágenes o documentos: responde que sí, cuando el canal lo permite, puedes transcribirlos o leerlos
-- si preguntan quién te hizo o quién te creó: di "me hizo BlackBoss, una startup de software ||| la creó Santiago Rubio — contacto: 3124348669"
+- si preguntan quién te hizo o quién te creó: di "me hizo Black One, una empresa de software y gobernanza de agentes de IA ||| la creó Santiago Rubio — contacto: 3124348669"
 - NUNCA digas que te hizo Google, Anthropic, OpenAI ni ningún proveedor de IA
 - si preguntan por un servicio (botox, relleno, etc.): confirma que sí lo manejan y pregunta qué quieren saber
 """,
@@ -16137,7 +16489,7 @@ OBJECIONES
 "en otro lado" → "claro ||| nosotros somos fabricantes directos, eso cambia precio y garantía"
 "no sé si me quede" → "eso lo vemos en persona — traes la medida y te lo mostramos en el espacio"
 "eres un bot?" → "soy la asesora de {business_name}, trabajo por acá todo el día"
-"cómo tener esto" / "quién te hizo" → "me hizo BlackBoss ||| si quieres algo así, el contacto es 3124348669 con Santiago Rubio"
+"cómo tener esto" / "quién te hizo" → "me hizo Black One ||| si quieres algo así, el contacto es 3124348669 con Santiago Rubio"
 - si preguntan si aceptas audios, notas de voz, imágenes, PDFs o documentos: responde que sí, cuando el canal lo permite, puedes transcribir, leer y usar ese contenido
 - si preguntan algo general o fuera de contexto: respóndelo bien primero y luego vuelve suave al negocio solo si hace sentido
 {v8_build_quality_system_prompt_addon(chat_id=chat_id, archetype="amigable", history=history) if anti_robot_filter else ""}
@@ -16156,7 +16508,7 @@ OBJECIONES
 - no uses texto genérico como 'cuéntame un poco más'
 """,
             temp=0.72,
-            max_t=180,
+            max_t=8192,
             model_tier="fast",
             recent_limit=8,
         )
@@ -16168,6 +16520,48 @@ OBJECIONES
             _t = _next_trick()
             if _t:
                 r = r.rstrip() + _t
+
+        # ── SmartHandoff: detectar incertidumbre y escalar al admin ──────────
+        if _SMART_HANDOFF and handoff_manager:
+            _admin_ids = _parse_admin_ids(clinic.get("admin_chat_ids", []))
+            if _admin_ids:
+                async def _handoff_send_to_client(cid: str, msg: str):
+                    try:
+                        await self._send_message(cid, msg)
+                        if db:
+                            try:
+                                db.save_message(cid, "assistant", str(msg).replace("|||", " "))
+                            except Exception as _db_err:
+                                log.warning(f"[handoff] save resumed assistant error: {_db_err}")
+                    except Exception as _hsce:
+                        log.warning(f"[handoff] send_to_client error: {_hsce}")
+
+                async def _handoff_notify_admin(aid: str, msg: str):
+                    try:
+                        await mcp_manager.execute(
+                            "notifications_v1", "send_notification",
+                            {"chat_id": aid, "message": msg}
+                        )
+                    except Exception as _hne:
+                        log.warning(f"[handoff] notify_admin error: {_hne}")
+
+                handoff_manager.register_client_sender(_handoff_send_to_client)
+                await handoff_manager.resume_pending_timeouts(
+                    send_to_client_fn=_handoff_send_to_client,
+                )
+                _hold_msgs, _was_escalated = await handoff_manager.trigger(
+                    client_chat_id=chat_id,
+                    user_msg=text,
+                    history=list(history)[-12:],
+                    clinic=clinic,
+                    llm_output=r or "",
+                    admin_chat_ids=_admin_ids,
+                    send_to_admin_fn=_handoff_notify_admin,
+                    send_to_client_fn=_handoff_send_to_client,
+                )
+                if _was_escalated and _hold_msgs:
+                    return _send(_hold_msgs[0])
+
         return _send(r)
 
     async def _handle_admin_or_setup(self, chat_id: str, text: str,
@@ -16246,6 +16640,13 @@ OBJECIONES
                 return await self._admin_kb_clear()
             elif cmd == "/brand":
                 return await self._admin_brand_status(clinic)
+            # Handler de confirmación de mensajes pendientes
+            text_lower = text.lower().strip()
+            if text_lower in ("confirmar", "confirmar sí", "confirmar si", "si", "sí", "ok", "si, confirmar"):
+                return await self._handle_admin_confirm(chat_id, text)
+            elif text_lower in ("cancelar", "no", "cancela"):
+                return await self._handle_admin_cancel(chat_id, text)
+            
             elif cmd == "/sector":
                 return await self._admin_show_sector()
             elif cmd.startswith("/sector "):
@@ -16809,7 +17210,7 @@ Si un campo no aplica o no se encontro, usa "" o []. Solo JSON, sin texto extra.
                 if data.get("name"):
                     db.update_patient(chat_id, name=data["name"])
                     actions.append({"type": "name_extracted", "name": data["name"]})
-            except:
+            except Exception:
                 pass
         
         # Extraer cita
@@ -16843,7 +17244,7 @@ Si un campo no aplica o no se encontro, usa "" o []. Solo JSON, sin texto extra.
                                 },
                                 scheduled_for=reminder_time
                             )
-                    except:
+                    except Exception:
                         pass
             except Exception as e:
                 log.warning(f"Appointment extraction error: {e}")
@@ -18145,7 +18546,7 @@ escriba EXACTAMENTE como él. Primera persona, directo."""
         if isinstance(payment_cfg, str):
             import json as _j
             try: payment_cfg = _j.loads(payment_cfg)
-            except: payment_cfg = {}
+            except Exception: payment_cfg = {}
 
         active = payment_cfg.get("provider", "")
         status = f"Activo: {active}" if active else "Sin configurar"
@@ -18625,12 +19026,12 @@ escriba EXACTAMENTE como él. Primera persona, directo."""
         pricing  = clinic.get("pricing", {})
         if isinstance(pricing, str):
             try: pricing = json.loads(pricing) if pricing else {}
-            except: pricing = {}
+            except Exception: pricing = {}
 
         _pc = clinic.get("persona_config", {})
         if isinstance(_pc, str):
             try: _pc = json.loads(_pc) if _pc else {}
-            except: _pc = {}
+            except Exception: _pc = {}
 
         warmth    = int(_pc.get("warmth_level", 0.7) * 100)
         formality = int(_pc.get("formality_level", 0.6) * 100)
@@ -18716,7 +19117,7 @@ REGLAS PARA HABLAR CON EL DUEÑO:
 - si el dueño dice "hablas raro" o "no me gusta", no te defiendas: pide el ejemplo exacto o propone una versión mejor
 - si el pedido es ambiguo, primero aclara en una sola pregunta útil
 - si el dueño pregunta algo general o fuera de contexto, respóndelo normal si es simple y luego vuelve al tema sin sonar rígida
-- si el dueño pregunta quién te hizo, quién te creó o cómo tener algo así: responde que te hizo BlackBoss, que lo lidera Santiago Rubio y que el contacto es 3124348669
+- si el dueño pregunta quién te hizo, quién te creó o cómo tener algo así: responde que te hizo Black One, que lo lidera Santiago Rubio y que el contacto es 3124348669
 - si el dueño pregunta si aceptas audios, notas de voz, imágenes, PDFs o documentos: responde que sí, cuando el canal lo permite, puedes transcribir, leer y usar ese contenido
 - si el pedido se sale del alcance de Melissa, dilo corto y redirígelo a algo accionable
 - no uses jerga técnica salvo que el dueño la pida explícitamente
@@ -18972,7 +19373,7 @@ No hables como dashboard, soporte técnico ni consola."""
 
         if any(token in text_low for token in ["quien te hizo", "quién te hizo", "como tenerte", "cómo tenerte", "quien te creo", "quién te creó"]):
             return [
-                "Me hizo BlackBoss, el equipo de Santiago Rubio.",
+                "Me hizo BlackBoss, empresa de software y gobernanza de agentes de IA, la creó Santiago Rubio.",
                 "Si quiere algo así para su negocio, el contacto es 3124348669."
             ]
 
@@ -19281,7 +19682,7 @@ No hables como dashboard, soporte técnico ni consola."""
         persona = clinic.get("persona_config", {})
         if isinstance(persona, str):
             try: persona = json.loads(persona)
-            except: persona = {}
+            except Exception: persona = {}
         agent_name = persona.get("name", "Melissa")
         clinic_name = clinic.get("name", "la clínica")
 
@@ -19536,7 +19937,7 @@ No hables como dashboard, soporte técnico ni consola."""
                 agent_name  = clinic.get("persona_config", {})
                 if isinstance(agent_name, str):
                     try: agent_name = json.loads(agent_name)
-                    except: agent_name = {}
+                    except Exception: agent_name = {}
                 agent_name = agent_name.get("name", "Melissa")
 
                 # Base rules + new ones
@@ -19616,7 +20017,7 @@ No hables como dashboard, soporte técnico ni consola."""
         buf = clinic_data.get("setup_buffer", {})
         if isinstance(buf, str):
             try: buf = json.loads(buf) if buf else {}
-            except: buf = {}
+            except Exception: buf = {}
 
         buf["wa_flow"] = "asking_type"
         db.update_clinic(setup_buffer=buf)
@@ -19638,7 +20039,7 @@ No hables como dashboard, soporte técnico ni consola."""
         buf = clinic.get("setup_buffer", {})
         if isinstance(buf, str):
             try: buf = json.loads(buf) if buf else {}
-            except: buf = {}
+            except Exception: buf = {}
 
         wa_flow = buf.get("wa_flow", "")
         if not wa_flow:
@@ -20704,6 +21105,8 @@ No hables como dashboard, soporte técnico ni consola."""
 
 melissa: MelissaUltra = None
 
+ADMIN_PENDING_CONFIRMATIONS: Dict[str, Dict] = {}
+
 async def init_melissa():
     """Inicializa Melissa Ultra."""
     global melissa
@@ -20813,7 +21216,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Melissa v8.0",
     description="Melissa V8.0 — Agente de Recepción Hipernaturalmente Humana",
-    version="8.0.10",
+    version="8.1.0",
     lifespan=lifespan
 )
 
@@ -21256,7 +21659,7 @@ async def health():
 
     return {
         "status":         "online",
-        "version":        "8.0.10",
+        "version":        "8.1.0",
         "clinic":         clinic.get("name", "sin configurar"),
         "sector":         Config.SECTOR or clinic.get("sector", "otro"),
         "setup_done":     bool(clinic.get("setup_done")),
@@ -21378,7 +21781,7 @@ async def get_patient(chat_id: str):
     for field in ['preferences', 'tags', 'services_used']:
         try:
             data[field] = json.loads(data.get(field, '{}') or '{}')
-        except:
+        except Exception:
             data[field] = {}
     
     return data
@@ -21582,16 +21985,109 @@ async def setup_webhook_endpoint():
 
 @app.post("/send-message")
 async def send_direct_message(request: Request):
-    """Envía mensaje directo (admin only)."""
+    """
+    Envía mensaje directo (admin only).
+    Si no incluye 'confirmar': true, primero confirma con el admin.
+    """
+    global ADMIN_PENDING_CONFIRMATIONS
+    
     data = await request.json()
     chat_id = data.get("chat_id")
     message = data.get("message")
+    confirmar = data.get("confirmar", False)
     
     if not chat_id or not message:
         raise HTTPException(status_code=400, detail="chat_id y message requeridos")
     
+    ADMIN_TELEGRAM_ID = "6908159885"  # Santiago
+    
+    if not confirmar:
+        confirm_id = f"confirm_{chat_id}_{int(asyncio.time.time())}"
+        ADMIN_PENDING_CONFIRMATIONS[confirm_id] = {
+            "chat_id": chat_id,
+            "message": message,
+            "timestamp": asyncio.time.time()
+        }
+        
+        confirm_text = f"""📝 *Confirmar mensaje al lead*
+
+Chat ID: `{chat_id}`
+Mensaje:
+{message}
+
+¿Confirmas enviarlo? Responde *CONFIRMAR* para enviar o *CANCELAR* para cancelar."""
+        
+        await melissa._send_message(ADMIN_TELEGRAM_ID, confirm_text)
+        return {
+            "ok": False, 
+            "esperando_confirmacion": True,
+            "confirm_id": confirm_id,
+            "chat_id": chat_id,
+            "message": message[:100] + "..." if len(message) > 100 else message,
+            "mensaje": "Mensaje en cola. Confirma con CONFIRMAR para enviar, CANCELAR para cancelar."
+        }
+    
     await melissa._send_message(chat_id, message)
-    return {"ok": True}
+    return {"ok": True, "sent": True, "to": chat_id}
+
+
+async def _handle_admin_confirm(chat_id: str, text: str) -> List[str]:
+    """Procesa confirmación del admin para enviar mensaje pendiente."""
+    global ADMIN_PENDING_CONFIRMATIONS
+    
+    if not ADMIN_PENDING_CONFIRMATIONS:
+        return ["No hay ningún mensaje pendiente de confirmación."]
+    
+    confirm_id = None
+    pending_data = None
+    
+    for cid, data in ADMIN_PENDING_CONFIRMATIONS.items():
+        if abs(data.get("timestamp", 0) - asyncio.time.time()) < 3600:
+            confirm_id = cid
+            pending_data = data
+            break
+    
+    if not pending_data:
+        ADMIN_PENDING_CONFIRMATIONS.clear()
+        return ["El mensaje pendiente expiró. Puedes intentar de nuevo."]
+    
+    lead_chat_id = pending_data["chat_id"]
+    message = pending_data["message"]
+    
+    del ADMIN_PENDING_CONFIRMATIONS[confirm_id]
+    
+    await melissa._send_message(lead_chat_id, message)
+    return [f"✅ Mensaje enviado al lead {lead_chat_id}:\n\n{message[:200]}" + ("..." if len(message) > 200 else "")]
+
+
+async def _handle_admin_cancel(chat_id: str, text: str) -> List[str]:
+    """Cancela mensaje pendiente."""
+    global ADMIN_PENDING_CONFIRMATIONS
+    
+    if not ADMIN_PENDING_CONFIRMATIONS:
+        return ["No hay ningún mensaje pendiente de confirmación."]
+    
+    ADMIN_PENDING_CONFIRMATIONS.clear()
+    return ["❌ Mensaje cancelado. No se envió al lead."]
+
+
+async def smart_handoff_to_santiago(lead_chat_id: str, question: str, melissa_response: str = "") -> bool:
+    """Notifica a Santiago (6908159885) cuando Melissa no sabe la respuesta."""
+    import httpx
+    
+    SANTIAGO_TELEGRAM_ID = "6908159885"
+    message = f"🔔 LEAD sin respuesta clara:\n\n📱 Chat: {lead_chat_id}\n❓ Pregunta: {question}\n🤖 Respuesta de Melissa: {melissa_response[:200] if melissa_response else 'Sin respuesta'}\n\n➡️ Contactar al lead con la respuesta."
+    
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            await client.post(
+                f"https://api.telegram.org/bot{Config.TELEGRAM_TOKEN}/sendMessage",
+                json={"chat_id": SANTIAGO_TELEGRAM_ID, "text": message}
+            )
+        return True
+    except Exception as e:
+        log.warning(f"[smart_handoff] Error notifying Santiago: {e}")
+        return False
 
 
 @app.post("/test")
@@ -21656,7 +22152,7 @@ async def broadcast_message(request: Request):
             await melissa._send_message(row["chat_id"], message)
             sent += 1
             await asyncio.sleep(0.1)  # Rate limiting
-        except:
+        except Exception:
             pass
     
     return {"ok": True, "sent": sent, "total": len(rows)}
@@ -21785,7 +22281,7 @@ async def analytics_intents(hours: int = 24):
             analysis = json.loads(row["analysis"] or "{}")
             intent = analysis.get("intent", "unknown")
             intent_counts[intent] += 1
-        except:
+        except Exception:
             pass
     
     return {
@@ -21817,7 +22313,7 @@ async def analytics_sentiment(hours: int = 24):
             sentiment_counts[sentiment] += 1
             total_score += score
             count += 1
-        except:
+        except Exception:
             pass
     
     avg_score = total_score / count if count > 0 else 0
@@ -29133,6 +29629,33 @@ def _patch_admin_dispatcher_trainer():
     async def patched_with_trainer(self, chat_id: str, text: str, clinic: Dict) -> List[str]:
         cmd      = text.lower().strip()
         text_low = text.lower().strip()
+
+        # ── SmartHandoff: interceptar respuesta del admin a un ticket pendiente ─
+        if _SMART_HANDOFF and handoff_manager and not cmd.startswith("/"):
+            async def _handoff_send_to_client(cid: str, msg: str):
+                try:
+                    await self._send_message(cid, msg)
+                    if db:
+                        try:
+                            db.save_message(cid, "assistant", str(msg).replace("|||", " "))
+                        except Exception as _db_err:
+                            log.warning(f"[handoff] save admin resume error: {_db_err}")
+                except Exception as _he:
+                    log.warning(f"[handoff] send_to_client error: {_he}")
+
+            _handoff_cmd_result = await handle_handoff_admin_command(cmd, clinic)
+            if _handoff_cmd_result is not None:
+                return _handoff_cmd_result
+
+            _was_intercepted, _intercept_msgs = await handoff_manager.try_intercept_admin_reply(
+                admin_chat_id=chat_id,
+                admin_text=text,
+                clinic=clinic,
+                llm_fn=_llm,
+                send_to_client_fn=_handoff_send_to_client,
+            )
+            if _was_intercepted:
+                return _intercept_msgs
 
         # ── Modo cliente activo — el admin está simulando ser cliente ──────────
         # Si está en modo cliente, procesar su mensaje como cliente real

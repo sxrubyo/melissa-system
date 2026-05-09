@@ -195,6 +195,42 @@ def test_demo_domino_does_not_treat_followup_question_as_new_business_name() -> 
     )
 
     assert payload["stage"] == "re-ground"
+    assert payload["contract"]["should_reask_business_name"] is False
+    assert "negocio_actual" in payload["contract"]["required_details"]
+
+
+def test_demo_domino_does_not_escalate_to_clarify_demo_only_for_assistant_turn_count() -> None:
+    payload = melissa_domino.build_demo_domino_payload(
+        user_text="hola",
+        history=[
+            {"role": "assistant", "content": "pásame el nombre de tu negocio y arrancamos"},
+            {"role": "assistant", "content": "dime el nombre del negocio para seguir"},
+        ],
+        business_name="",
+        business_ctx="",
+        found_online=False,
+    )
+
+    assert payload["stage"] == "enter-demo"
+    assert payload["contract"]["decision_priority"] == "llm_first"
+    assert payload["contract"]["fallback_triggers"] == ["empty", "exception", "below_threshold"]
+    assert payload["contract"]["should_reask_business_name"] is True
+
+
+def test_demo_domino_contract_requires_capability_detail_for_identity_probe() -> None:
+    payload = melissa_domino.build_demo_domino_payload(
+        user_text="me mandaron tu numero y no entiendo que haces",
+        history=[],
+        business_name="",
+        business_ctx="",
+        found_online=False,
+    )
+
+    contract = payload["contract"]
+    assert payload["stage"] == "clarify-demo"
+    assert contract["decision_priority"] == "llm_first"
+    assert contract["quality_threshold"] >= 0.5
+    assert {"clientes", "citas", "responder"}.issubset(set(contract["required_details"]))
 
 
 def test_demo_followup_meta_question_after_business_binding_uses_regrounded_llm() -> None:
