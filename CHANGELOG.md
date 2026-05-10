@@ -1,5 +1,13 @@
 # Changelog
 
+## 8.1.1 - 2026-05-10
+
+- corregido el flujo demo-owner en inglés para no tomar frases como `Just English sorry` o `I don't talk Spanish` como nombre de negocio
+- endurecida la detección de idioma para mantener el inglés durante confirmaciones, correcciones y preguntas meta del dueño
+- localizado el binding del negocio, confirmaciones de URL, correcciones y resets para que respeten el idioma activo del dueño
+- afinados los heurísticos de nombre de negocio para distinguir mejor entre lenguaje/meta y nombres reales
+- añadidas pruebas para onboarding demo en inglés, corrección de match equivocado y preservación del idioma en sesión
+
 ## 8.1.0 - 2026-05-09
 
 - corrigido el filtro de frases robóticas para que deje de truncar salidas válidas del LLM

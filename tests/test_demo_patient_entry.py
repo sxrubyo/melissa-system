@@ -101,6 +101,9 @@ def test_demo_patient_like_messages_are_detected() -> None:
     assert not runtime._demo_should_use_patient_chat_path("quiero una demo")
     assert not runtime._demo_should_use_patient_chat_path("tengo un negocio")
     assert not runtime._demo_should_use_patient_chat_path("me dejaron probarte")
+    assert not runtime._demo_should_use_patient_chat_path("what is this")
+    assert not runtime._demo_should_use_patient_chat_path("i don't talk spanish")
+    assert not runtime._demo_should_use_patient_chat_path("english only")
 
 
 def test_demo_patient_clinic_uses_runtime_sector_and_drops_nova_label() -> None:
@@ -498,6 +501,112 @@ def test_demo_owner_onboarding_invalid_model_outputs_fall_back_to_owner_last_res
     joined = " ".join(result).lower()
     assert "básicamente atender" not in " ".join(result).lower()
     assert any(token in joined for token in ("clientes", "citas", "negocio"))
+
+
+def test_demo_owner_english_probe_does_not_bind_language_phrase_as_business() -> None:
+    module = load_melissa_module()
+
+    class _Engine:
+        async def complete(self, msgs, **kwargs):
+            user = msgs[-1]["content"].lower()
+            if "just english sorry" in user:
+                return (
+                    "Hi, I’m Melissa ||| I can handle client chats, questions and appointment flow for a business ||| send me the business name and I’ll build the demo around it",
+                    {"provider": "fake", "model": "fake"},
+                )
+            if "what did u say" in user or "don't understand" in user:
+                return (
+                    "I said I can simulate how I’d handle your business chat ||| if you want, send me the business name and I’ll show it in context",
+                    {"provider": "fake", "model": "fake"},
+                )
+            return ("ok ||| keep going", {"provider": "fake", "model": "fake"})
+
+    runtime, _db = _build_demo_runtime(module, _Engine())
+    clinic = {"name": "Nova", "sector": "otro", "services": ["Botox"]}
+
+    first = asyncio.run(
+        runtime._handle_demo_message("owner_en_probe_1", "Just English sorry", clinic)
+    )
+    second = asyncio.run(
+        runtime._handle_demo_message(
+            "owner_en_probe_1",
+            "What did u say? That's not my bussines I don't understand.",
+            clinic,
+        )
+    )
+
+    assert runtime._demo_sessions.get("demo_owner_en_probe_1_name", "") == ""
+    assert runtime._demo_sessions.get("demo_owner_en_probe_1_owner_lang") == "en"
+    assert "business name" in " ".join(first).lower()
+    assert "business" in " ".join(second).lower()
+    assert "negocio" not in " ".join(second).lower()
+
+
+def test_demo_owner_english_language_boundary_does_not_become_business_name() -> None:
+    module = load_melissa_module()
+
+    class _Engine:
+        async def complete(self, msgs, **kwargs):
+            user = msgs[-1]["content"].lower()
+            if "i don't talk spanish" in user or "i dont talk spanish" in user:
+                return (
+                    "No problem, I can stay in English ||| send me your business name when you want and I’ll set the demo up from there",
+                    {"provider": "fake", "model": "fake"},
+                )
+            return (
+                "Hi, I’m Melissa ||| tell me the business name and I’ll set the demo up properly",
+                {"provider": "fake", "model": "fake"},
+            )
+
+    runtime, _db = _build_demo_runtime(module, _Engine())
+    clinic = {"name": "Nova", "sector": "otro", "services": ["Botox"]}
+
+    result = asyncio.run(
+        runtime._handle_demo_message("owner_en_lang_1", "No, I don't talk Spanish", clinic)
+    )
+
+    assert runtime._demo_sessions.get("demo_owner_en_lang_1_name", "") == ""
+    assert runtime._demo_sessions.get("demo_owner_en_lang_1_owner_lang") == "en"
+    joined = " ".join(result).lower()
+    assert "english" in joined
+    assert "negocio" not in joined
+
+
+def test_demo_owner_english_wrong_match_triggers_correction_not_rebind() -> None:
+    module = load_melissa_module()
+
+    class _Engine:
+        async def complete(self, msgs, **kwargs):
+            user = msgs[-1]["content"]
+            if user.startswith("negocio: "):
+                return (
+                    "I’ve got Just English now ||| I’m already grounded on how the chat should sound ||| write to me like a real client and I’ll reply in context",
+                    {"provider": "fake", "model": "fake"},
+                )
+            return ("ok ||| keep going", {"provider": "fake", "model": "fake"})
+
+    runtime, _db = _build_demo_runtime(module, _Engine())
+
+    async def _search_business_link(name, excluded_urls=None):
+        return (
+            "Olive Care Clinic is a medical clinic with outpatient services and patient support information online.",
+            "https://www.olivecareclinic.example/",
+        )
+
+    runtime.search.search_business_link = _search_business_link
+    clinic = {"name": "Nova", "sector": "otro", "services": ["Botox"]}
+
+    asyncio.run(runtime._handle_demo_message("owner_en_fix_1", "English only", clinic))
+    asyncio.run(runtime._handle_demo_message("owner_en_fix_1", "Olive Care Clinic", clinic))
+    result = asyncio.run(
+        runtime._handle_demo_message("owner_en_fix_1", "That's not my business", clinic)
+    )
+
+    joined = " ".join(result).lower()
+    assert "wrong one" in joined or "another business" in joined or "tell me what your business does" in joined
+    assert "negocio" not in joined
+    assert runtime._demo_sessions.get("demo_owner_en_fix_1_name") == "Olive Care Clinic"
+    assert runtime._demo_sessions.get("demo_owner_en_fix_1_found") is True
 
 
 def test_transcribe_audio_uses_groq_when_gemini_is_exhausted() -> None:

@@ -12866,6 +12866,8 @@ class MelissaUltra:
             "cómo funcionas", "como funcionas", "qué haces", "que haces",
             "quiero una demo", "quiero demo", "hagamos una demo", "simulacion",
             "simulación", "modo demo", "tengo un negocio", "tengo una empresa",
+            "what is this", "what do you do", "who are you", "english only",
+            "i don't talk spanish", "i dont talk spanish", "i don't understand", "i dont understand",
         )
         if any(exc in normalized for exc in owner_exceptions):
             return False
@@ -12972,6 +12974,14 @@ class MelissaUltra:
             "me pasaron este número",
             "para mi negocio",
             "para mi empresa",
+            "what is this",
+            "what do you do",
+            "who are you",
+            "english only",
+            "i don't talk spanish",
+            "i dont talk spanish",
+            "i don't understand",
+            "i dont understand",
         )
         if any(marker in normalized for marker in owner_demo_markers):
             return False
@@ -13853,6 +13863,7 @@ class MelissaUltra:
         bpersona_key= sk + "_persona"
         btone_key   = sk + "_tone"      # tono detectado: SALUD PREMIUM | PREMIUM | SALUD | RETAIL | GENERAL
         bmodel_key  = sk + "_model"     # proveedor LLM activo: auto|groq|gemini|openrouter
+        blang_key   = sk + "_owner_lang" # idioma dominante del dueño en demo
         blearn_key  = sk + "_learn"     # modo aprendizaje manual: cuántas preguntas llevamos
         bsim_key    = sk + "_sim_mode"  # modo simulación cliente en el mismo chat del dueño
 
@@ -13861,8 +13872,92 @@ class MelissaUltra:
         found_online   = self._demo_sessions.get(bfound_key, False)
         persona        = self._demo_sessions.get(bpersona_key, "amigable")
         demo_model_pref= self._demo_sessions.get(bmodel_key, "auto")  # auto|groq|gemini|openrouter
+        owner_lang     = self._demo_sessions.get(blang_key, "es")
         sim_mode_active = bool(self._demo_sessions.get(bsim_key, False))
         llm_runtime_ready = self._llm_runtime_available()
+
+        def _detect_demo_owner_language(raw_text: str, current_lang: str = "es") -> str:
+            normalized = _normalize_conv_text(raw_text or "")
+            if not normalized:
+                return current_lang or "es"
+
+            explicit_en = (
+                "just english sorry",
+                "sorry just english",
+                "english sorry",
+                "english only",
+                "speak english",
+                "speak in english",
+                "i dont speak spanish",
+                "i don t speak spanish",
+                "i dont talk spanish",
+                "i don t talk spanish",
+                "no spanish",
+                "only english",
+                "what is this",
+                "sorry what is this",
+                "i dont understand",
+                "i don t understand",
+                "what did you say",
+                "what did u say",
+                "thats not my business",
+                "that s not my business",
+                "thats not us",
+                "that s not us",
+                "wrong business",
+                "wrong company",
+            )
+            explicit_pt = (
+                "só portugues",
+                "so portugues",
+                "falo portugues",
+                "nao falo espanhol",
+                "não falo espanhol",
+            )
+            if any(token in normalized for token in explicit_en):
+                return "en"
+            if any(token in normalized for token in explicit_pt):
+                return "pt"
+
+            try:
+                detected = multilingual_handler.detect(raw_text) if multilingual_handler else MultilingualHandler().detect(raw_text)
+            except Exception:
+                detected = "es"
+
+            # Si ya estamos en inglés/portugués, no volver a español por mensajes cortos tipo "ok", "yes", "reset".
+            if current_lang in {"en", "pt"} and detected == "es" and len(normalized.split()) <= 6:
+                return current_lang
+            return detected if detected in {"es", "en", "pt"} else (current_lang or "es")
+
+        owner_lang = _detect_demo_owner_language(text, owner_lang)
+        self._demo_sessions[blang_key] = owner_lang
+
+        def _lang_text(es_text: str, en_text: str, pt_text: Optional[str] = None) -> str:
+            if owner_lang == "en":
+                return en_text
+            if owner_lang == "pt" and pt_text is not None:
+                return pt_text
+            return es_text
+
+        def _owner_confusion_or_language_signal(raw_text: str) -> bool:
+            normalized = _normalize_conv_text(raw_text or "")
+            if not normalized:
+                return False
+            signals = (
+                "just english sorry", "sorry just english", "english sorry",
+                "english only", "speak english", "speak in english", "only english",
+                "i dont speak spanish", "i don t speak spanish",
+                "i dont talk spanish", "i don t talk spanish",
+                "what is this", "sorry what is this",
+                "i dont understand", "i don t understand",
+                "what did you say", "what did u say",
+                "thats not my business", "that s not my business",
+                "that is not my business", "not my business",
+                "thats not us", "that s not us", "that is not us", "wrong business",
+                "wrong company", "wrong one", "not the right one",
+                "no hablo español", "no hablo espanol", "solo ingles", "solo inglés",
+            )
+            return any(signal in normalized for signal in signals)
 
         def _save(role, msg):
             if db:
@@ -13927,12 +14022,13 @@ class MelissaUltra:
                 _text_norm = _normalize_conv_text(text or "")
                 _greeting_tokens = (
                     "hola", "buenas", "buenas tardes", "buenos dias", "buenos días",
-                    "buenas noches", "hey", "holi",
+                    "buenas noches", "hey", "holi", "hi", "hello",
+                    "good morning", "good afternoon", "good evening",
                 )
                 if any(_text_norm == token or _text_norm.startswith(token + " ") for token in _greeting_tokens):
                     lowered_bubble = _normalize_conv_text(bubbles[0] or "")
                     if not any(token in lowered_bubble for token in ("cuentame", "cuéntame", "revisar", "ayudo", "ayudar")):
-                        bubbles.append("cuéntame qué te gustaría revisar")
+                        bubbles.append(_lang_text("cuéntame qué te gustaría revisar", "what would you like to check?"))
             tone = self._demo_sessions.get(btone_key, "GENERAL")
             if tone in ("SALUD PREMIUM", "PREMIUM"):
                 bubbles = [b[0].upper() + b[1:] if b else b for b in bubbles]
@@ -13951,6 +14047,7 @@ class MelissaUltra:
                 for token in (
                     "hola", "hola buenas", "buenas", "buenas tardes",
                     "buenas noches", "buenos dias", "buenos días", "hey", "holi",
+                    "hi", "hello", "good morning", "good afternoon", "good evening",
                 )
             )
             if greeted:
@@ -13959,12 +14056,16 @@ class MelissaUltra:
                     parts[0] = "hola, " + parts[0][0].lower() + parts[0][1:]
                 elif first_norm.startswith("melissa, "):
                     parts[0] = "hola, " + parts[0][0].lower() + parts[0][1:]
+                elif first_norm.startswith("i am melissa") or first_norm.startswith("im melissa") or first_norm.startswith("i'm melissa"):
+                    parts[0] = "hi, " + parts[0][0].lower() + parts[0][1:]
             return " ||| ".join(parts)
 
         _business_confirmation_signals = (
             "sí ese es", "si ese es", "ese sí", "ese si", "ese mismo", "correcto ese",
             "sí, ese", "si, ese", "exacto", "sí es ese", "si es ese",
             "sí", "si", "sip", "claro", "correcto", "ese", "eso", "yes", "yep",
+            "thats us", "that's us", "that is us", "yes thats us", "yes that's us",
+            "yes thats right", "yes that's right", "thats right", "that's right",
             "ajá", "aja", "dale", "listo", "así es", "asi es", "es ese", "ese es", "exactamente",
             "sí señor", "si señor", "siii", "siiii", "siiiii", "sii",
             "somos nosotros", "somos esos", "somos ese", "ese somos", "eso somos",
@@ -13982,6 +14083,12 @@ class MelissaUltra:
                 normalized == signal or (len(signal) > 6 and signal in normalized)
                 for signal in _business_confirmation_signals
             )
+
+        def _owner_is_english() -> bool:
+            return owner_lang == "en"
+
+        def _owner_is_portuguese() -> bool:
+            return owner_lang == "pt"
 
         # ── FIX v10: Reset check ANTES del conversation core ─────────────────────
         # Bug v9: _try_conversation_core corría primero y el LLM recibía "reset"
@@ -14010,6 +14117,20 @@ class MelissaUltra:
                 "ok, borrón y cuenta nueva ||| nombre del negocio?",
                 "listo ||| dime el nombre del negocio y arrancamos",
             ]
+            if _owner_is_english():
+                _reset_replies = [
+                    "all set, starting from scratch ||| what business am I working with?",
+                    "cleared everything ||| tell me the name of your business",
+                    "ok, fresh start ||| what's the name of the business?",
+                    "ready ||| send me the business name and I’ll start from there",
+                ]
+            elif _owner_is_portuguese():
+                _reset_replies = [
+                    "pronto, começamos do zero ||| com qual negócio eu trabalho?",
+                    "apaguei tudo ||| me diz o nome do negócio",
+                    "ok, recomeçando ||| qual é o nome do negócio?",
+                    "certo ||| me passa o nome do negócio e eu começo",
+                ]
             return _send(_rr.choice(_reset_replies))
         # ─────────────────────────────────────────────────────────────────────────
 
@@ -14063,6 +14184,14 @@ class MelissaUltra:
             "aceptas pdf",
             "me mandaron tu numero",
             "me mandaron tu número",
+            "what is this",
+            "what do you do",
+            "who are you",
+            "i dont understand",
+            "i don't understand",
+            "english only",
+            "i dont talk spanish",
+            "i don't talk spanish",
         )
 
         # PATCH P3 — conversation_core solo cuando el negocio ya está cargado.
@@ -14381,6 +14510,8 @@ class MelissaUltra:
             normalized = _normalize_conv_text(candidate)
             if len(candidate) > 90:
                 return False
+            if _owner_confusion_or_language_signal(candidate):
+                return False
             explicit_markers = (
                 "mi negocio se llama",
                 "nuestro negocio se llama",
@@ -14405,6 +14536,9 @@ class MelissaUltra:
                     "aceptas pdf", "para que", "para qué", "quien te hizo", "quién te hizo",
                     "me mandaron tu numero", "me mandaron tu número", "quiero una demo", "quiero demo",
                     "quiero probarte", "tengo un negocio", "tengo una empresa", "hola", "buenas", "?",
+                    "what is this", "sorry what is this", "what do you do", "who are you",
+                    "i dont understand", "i don t understand", "english only", "just english sorry",
+                    "i dont talk spanish", "i don t talk spanish", "i dont speak spanish", "i don t speak spanish",
                 )
             ):
                 return False
@@ -14415,13 +14549,32 @@ class MelissaUltra:
             if not (1 <= len(words) <= 8):
                 return False
             if any(ch.isupper() for ch in candidate):
+                upper_tokens = [word.lower() for word in words if len(word) >= 2]
+                blocked_upper_tokens = {
+                    "sorry", "spanish", "what", "this", "that",
+                    "dont", "don't", "understand", "talk", "speak", "only", "hello",
+                    "hi", "hola", "business", "not", "my",
+                }
+                if any(token in blocked_upper_tokens for token in upper_tokens):
+                    return False
                 return True
             business_tokens = (
                 "clinica", "clínica", "clinic", "spa", "dental", "salud", "centro",
                 "consultorio", "estetica", "estética", "studio", "group", "lab",
                 "restaurante", "hotel", "tienda", "academia", "gym", "gimnasio",
             )
-            return any(token in normalized for token in business_tokens)
+            if any(token in normalized for token in business_tokens):
+                return True
+            # Marcas de 1-3 palabras sin jerga conversacional también pueden ser válidas.
+            if 1 <= len(words) <= 3 and all(len(word) >= 3 for word in words):
+                stop_tokens = {
+                    "sorry", "spanish", "hello", "what", "this", "that",
+                    "understand", "business", "please", "talk", "speak", "only",
+                    "dont", "not", "sorry",
+                }
+                if not any(word.lower() in stop_tokens for word in words):
+                    return True
+            return False
 
         def _demo_owner_reply_is_low_quality(raw_response: Optional[str]) -> bool:
             lowered = _normalize_conv_text(raw_response or "")
@@ -14432,7 +14585,7 @@ class MelissaUltra:
             parts = [part.strip() for part in re.split(r"\s*\|\|\|\s*|\n+", raw_response or "") if part.strip()]
             weak_parts = {
                 "hola", "buenas", "claro", "dale", "listo", "sí", "si",
-                "puedes", "perfecto", "entiendo",
+                "puedes", "perfecto", "entiendo", "ok", "keep going",
             }
             if any(_normalize_conv_text(part) in weak_parts for part in parts):
                 return True
@@ -14721,30 +14874,36 @@ class MelissaUltra:
             _user = _normalize_conv_text(user_text or "")
             if any(token in _user for token in ("para que", "para qué", "por que", "por qué")):
                 if _biz:
-                    return (
-                        f"te lo pido para hablar como si ya llevara el chat de {_biz}"
-                        " ||| así la demo te muestra mejor cómo respondería de verdad"
+                    return _lang_text(
+                        f"te lo pido para hablar como si ya llevara el chat de {_biz} ||| así la demo te muestra mejor cómo respondería de verdad",
+                        f"i ask for it so I can sound like I already handle {_biz}'s chat ||| that way the demo feels real and properly grounded",
                     )
-                return (
-                    "te lo pido para ubicar el tono, el contexto y cómo tendría que responder"
-                    " ||| apenas me digas el nombre del negocio te muestro la demo bien aterrizada"
+                return _lang_text(
+                    "te lo pido para ubicar el tono, el contexto y cómo tendría que responder ||| apenas me digas el nombre del negocio te muestro la demo bien aterrizada",
+                    "i ask for it so I can match the tone, the context and the way I'd actually reply ||| as soon as you send the business name, I'll make the demo feel real",
                 )
             if _biz:
-                return f"Escríbeme algo como cliente de {_biz} y arranco"
+                return _lang_text(
+                    f"Escríbeme algo como cliente de {_biz} y arranco",
+                    f"send me something like a real client from {_biz} and I'll jump in",
+                )
             if any(
                 token in _user
                 for token in (
                     "me mandaron tu numero", "me mandaron tu número", "me pasaron tu numero",
                     "me pasaron tu número", "que haces", "qué haces", "no entiendo que haces",
                     "no entiendo qué haces", "quien eres", "quién eres",
+                    "what is this", "what do you do", "who are you", "i dont understand", "i don't understand",
                 )
             ):
-                return (
-                    "hola, soy Melissa, la asesora virtual que llevaría tu chat"
-                    " ||| respondo clientes, filtro interesados, ubico servicios y ayudo con citas"
-                    " ||| pásame el nombre de tu negocio y arranco"
+                return _lang_text(
+                    "hola, soy Melissa, la asesora virtual que llevaría tu chat ||| respondo clientes, filtro interesados, ubico servicios y ayudo con citas ||| pásame el nombre de tu negocio y arranco",
+                    "hi, I'm Melissa, the assistant who would handle your business chat ||| I reply to clients, filter leads, explain services and help move appointments ||| send me your business name and I'll build the demo around it",
                 )
-            return "hola, soy Melissa, la asesora virtual que llevaría tu chat ||| pásame el nombre de tu negocio y arranco"
+            return _lang_text(
+                "hola, soy Melissa, la asesora virtual que llevaría tu chat ||| pásame el nombre de tu negocio y arranco",
+                "hi, I'm Melissa, the assistant who would handle your business chat ||| send me your business name and I'll start from there",
+            )
 
         async def _demo_owner_onboarding_reply(*, explain_name: bool = False, force_stage: Optional[str] = None) -> List[str]:
             user_block = text
@@ -14774,6 +14933,14 @@ No suenes a bot, consultora ni software. No recites tus capacidades como lista.
 Si el dueño todavía no te dijo el nombre del negocio, responde su pregunta primero y al final, de forma natural, pregunta el nombre.
 Usa 2 o 3 burbujas separadas por |||. Cada burbuja cierra una idea completa. Nunca dejes frases cortadas."""
 
+            language_tone = _lang_text(
+                "",
+                "The owner is writing in English. Respond entirely in English. Casual, warm WhatsApp English. Never switch back to Spanish unless the owner does.",
+                "O dono está escrevendo em português. Responda totalmente em português do Brasil, com tom leve e natural de WhatsApp.",
+            )
+            if language_tone:
+                system_prompt += "\n\nIDIOMA / LANGUAGE RULE:\n" + language_tone
+
             system_prompt += """
 
 IDENTIDAD — NUNCA SALGAS DE ESTE PERSONAJE:
@@ -14789,6 +14956,7 @@ REGLAS EXTRA DE ESTA DEMO:
 - si preguntan si aceptas audios, notas de voz, imágenes, PDFs o documentos: responde que sí, cuando el canal lo soporte, puedes transcribir, leer y usar ese contenido
 - si te hacen una pregunta general fuera de contexto, respóndela bien primero y luego vuelve suave a la demo si hace sentido
 - si sospechan estafa o no quieren dar el nombre del negocio, baja la guardia y explica para qué lo pides sin sonar defensiva
+- si dicen que no hablan español o te escriben en inglés, sigues solo en inglés
 - nunca menciones Nova, Clínica de las Américas ni branding heredado
 - no dejes frases colgadas ni respuestas cortadas
 - si te saludan con "hola", "buenas" o parecido, abre natural con "hola, soy Melissa..." o "hola, Melissa por acá..." antes de seguir
@@ -14924,7 +15092,11 @@ EJEMPLOS DE RESPUESTAS BUENAS vs MALAS:
                     c.execute("DELETE FROM conversations WHERE chat_id=?", (chat_id,))
             except Exception: pass
             _save("user", text)
-            return _send("listo, empezamos de cero ||| cuál es el nombre del negocio")
+            return _send(_lang_text(
+                "listo, empezamos de cero ||| cuál es el nombre del negocio",
+                "all set, starting from scratch ||| what’s the name of the business?",
+                "pronto, começamos do zero ||| qual é o nome do negócio?",
+            ))
 
         # ── Identidad del producto para curiosidad / prueba antes del negocio ──
         _demo_identity_signals = [
@@ -14933,6 +15105,9 @@ EJEMPLOS DE RESPUESTAS BUENAS vs MALAS:
             "como funcionas", "cómo funcionas", "que haces", "qué haces",
             "quiero probarte", "me gustaria probarte", "me gustaría probarte",
             "tengo un negocio", "tengo una empresa", "quiero una demo", "quiero demo",
+            "who are you", "what are you", "what do you do", "what is this",
+            "i want a demo", "i want to try you", "i have a business",
+            "english only", "i don't talk spanish", "i dont talk spanish",
         ]
         _text_low_pre = text.lower().strip()
         if (
@@ -14958,6 +15133,10 @@ EJEMPLOS DE RESPUESTAS BUENAS vs MALAS:
             "no sé de qué se trata", "no tengo idea de qué es",
             "me dijeron que probara", "me dijeron que contactara",
             "alguien me recomendó", "un conocido me dijo",
+            "someone told me to text you", "they told me to try you",
+            "i dont know what this is", "i don't know what this is",
+            "what is this", "sorry what is this", "someone sent me your number",
+            "they gave me your number", "what are you supposed to do",
         ]
         if not business_name and not detected_cmd and any(
             sig in _text_low_pre for sig in _cold_referral_signals
@@ -15081,13 +15260,16 @@ TONO: Cálido, profesional, como receptionistareal.
                 "quiero saber", "deseo obtener", "necesito información", "me pueden",
                 "pueden decirme", "quisiera saber", "cuánto cuesta", "cuanto cuesta",
                 "información sobre", "informacion sobre", "para qué sirve",
+                "what is this", "what do you do", "who are you", "how does it work",
+                "i dont understand", "i don't understand", "why do you need",
             ]
             if any(s in nombre_raw.lower() for s in _question_signals):
                 _save("user", nombre_raw)
-                return _send(
-                    "antes de mostrarte cómo funciono, necesito el nombre de tu negocio o clínica "
-                    " ||| cuál es?"
-                )
+                return _send(_lang_text(
+                    "antes de mostrarte cómo funciono, necesito el nombre de tu negocio o clínica ||| cuál es?",
+                    "before I show you how I work, I need the name of your business or clinic ||| what is it?",
+                    "antes de te mostrar como eu funciono, preciso do nome do seu negócio ou clínica ||| qual é?",
+                ))
 
             # Detectar saludos y frases conversacionales que NO son un nombre de negocio
             _conversational = [
@@ -15098,13 +15280,19 @@ TONO: Cálido, profesional, como receptionistareal.
                 "jaja","jeje","xd","😊","😂","👍","🙏",
                 "quién eres","quien eres","qué haces","que haces","para qué sirves",
                 "eres un bot","eres ia","eres humano","cómo te llamas","como te llamas",
+                "hi","hello","good morning","good afternoon","good evening",
+                "sorry","thanks","thank you","yep","yes","nope",
+                "what is this","what do you do","who are you","i don't understand","i dont understand",
+                "english only","i don't talk spanish","i dont talk spanish",
             ]
             if any(nombre_raw.lower().strip() == s or nombre_raw.lower().strip().startswith(s + " ")
                    for s in _conversational):
                 _save("user", nombre_raw)
-                return _send(
-                    "hola ||| necesito el nombre de tu negocio para arrancar"
-                )
+                return _send(_lang_text(
+                    "hola ||| necesito el nombre de tu negocio para arrancar",
+                    "hi ||| I need the name of your business to get started",
+                    "oi ||| preciso do nome do seu negócio para começar",
+                ))
 
             # Detectar si es nombre de persona en vez de negocio
             # HUMANFIX: solo rechazar si es un nombre humano CONOCIDO.
@@ -15280,10 +15468,18 @@ INSTRUCCIONES CRÍTICAS:
                 ctx_hint = f"""No encontraste información en internet sobre "{nombre}".
 Actúa como si llevaras tiempo trabajando ahí. Pide naturalmente que te cuenten del negocio."""
 
+            bind_language_tone = _lang_text(
+                "",
+                "Respond entirely in English. Natural WhatsApp English. Do not switch back to Spanish.",
+                "Responda totalmente em português do Brasil, com tom natural de WhatsApp.",
+            )
+
             prompt = f"""Eres Melissa.
 Acabas de buscar en Google el negocio "{nombre}".
 
 {ctx_hint}
+
+{"REGLA DE IDIOMA:\n" + bind_language_tone if bind_language_tone else ""}
 
 TAREA: Generar el momento de activación en 3 burbujas (|||).
 
@@ -15311,7 +15507,7 @@ Máximo 1 oración por burbuja. Natural y seguro."""
                     return True
                 if _demo_owner_reply_is_low_quality(candidate):
                     return True
-                if not any(token in lowered_candidate for token in ("cliente", "chat")):
+                if not any(token in lowered_candidate for token in ("cliente", "chat", "client", "business", "cliente real")):
                     return True
                 if not found and any(
                     token in lowered_candidate
@@ -15343,14 +15539,31 @@ Máximo 1 oración por burbuja. Natural y seguro."""
             )
             if not r:
                 if found:
-                    r = f"Ya tengo {nombre} y me alegré de ti! 😊 Listo, ya puedo atender a tus clientes como si fuera parte del equipo. Cómo quieres que probemos?"
+                    r = _lang_text(
+                        f"ya tengo {nombre} ||| ya me ubiqué con cómo tendría que sonar esto ||| Escríbeme como si fueras un cliente y te respondo",
+                        f"I’ve got {nombre} now ||| I already know how this chat should sound ||| text me like a real client and I’ll reply in context",
+                        f"já tenho {nombre} ||| já entendi como esse chat precisa soar ||| me escreve como um cliente real e eu respondo em contexto",
+                    )
                 else:
                     # v12: no info → opciones naturales, sin exponer estado interno
-                    _no_info_opts = [
-                        f"ya anoté {nombre} ||| cuéntame a qué se dedican y te muestro cómo respondería",
-                        f"listo, {nombre} ||| no los encuentro en Google todavía — cuéntame qué hacen y arrancamos",
-                        f"ya los tengo ||| igual puedo hacer la demo — escríbeme un poco de qué trata el negocio",
-                    ]
+                    if _owner_is_english():
+                        _no_info_opts = [
+                            f"got it, {nombre} ||| tell me what the business does and I’ll shape the demo around that",
+                            f"okay, {nombre} ||| I’m not finding solid public info yet, so tell me what you offer and I’ll ground it from there",
+                            f"I’ve got the name now ||| give me a quick picture of the business and I’ll keep going",
+                        ]
+                    elif _owner_is_portuguese():
+                        _no_info_opts = [
+                            f"perfeito, {nombre} ||| me conta com o que o negócio trabalha e eu monto a demo nisso",
+                            f"ok, {nombre} ||| ainda não achei informação pública forte, então me conta o que vocês oferecem e eu ajusto a demo",
+                            f"já tenho o nome ||| me dá um resumo rápido do negócio e eu sigo daqui",
+                        ]
+                    else:
+                        _no_info_opts = [
+                            f"ya anoté {nombre} ||| cuéntame a qué se dedican y te muestro cómo respondería",
+                            f"listo, {nombre} ||| no los encuentro en Google todavía — cuéntame qué hacen y arrancamos",
+                            f"ya los tengo ||| igual puedo hacer la demo — escríbeme un poco de qué trata el negocio",
+                        ]
                     r = _r.choice(_no_info_opts)
 
             # ── Burbuja extra: confirmación del link ─────────────────────────
@@ -15359,12 +15572,27 @@ Máximo 1 oración por burbuja. Natural y seguro."""
             is_fallback_url = biz_url.startswith("https://www.google.com/search") or biz_url.startswith("https://www.google.com/maps/search")
             if biz_url and found and not is_fallback_url:
                 # Natural: manda el link con texto corto, sin pregunta directa
-                _link_intros = [
-                    "mira, encontré esto de ustedes",
-                    "los encontré por acá",
-                    "esto es de ustedes",
-                    "vi esto de su negocio",
-                ]
+                if _owner_is_english():
+                    _link_intros = [
+                        "I found this for you",
+                        "this looks like your business",
+                        "I found you here",
+                        "this is what I found for the business",
+                    ]
+                elif _owner_is_portuguese():
+                    _link_intros = [
+                        "achei isso de vocês",
+                        "encontrei vocês por aqui",
+                        "isso parece ser de vocês",
+                        "foi isso que eu achei do negócio",
+                    ]
+                else:
+                    _link_intros = [
+                        "mira, encontré esto de ustedes",
+                        "los encontré por acá",
+                        "esto es de ustedes",
+                        "vi esto de su negocio",
+                    ]
                 r = r.rstrip() + f" ||| {_r.choice(_link_intros)} ||| {biz_url}"
 
             return _send(r)
@@ -15379,6 +15607,18 @@ Máximo 1 oración por burbuja. Natural y seguro."""
         )
         if _is_url_confirm:
             _save("user", text)
+            if _owner_is_english():
+                return _send(_r.choice([
+                    "perfect, I’ve got you identified ||| send me something like a real client",
+                    "great, I’m fully oriented now ||| text me like a client and I’ll reply in context",
+                    "nice, now I know exactly who you are ||| let’s test it — write to me like a client",
+                ]))
+            if _owner_is_portuguese():
+                return _send(_r.choice([
+                    "perfeito, já identifiquei vocês ||| me escreve como se fosse um cliente",
+                    "boa, já me localizei ||| me manda algo como cliente e eu respondo",
+                    "ótimo, agora eu sei quem vocês são ||| vamos testar, me chama como cliente",
+                ]))
             return _send(_r.choice([
                 "bacano, ya los tengo identificados ||| Escríbeme algo como cliente",
                 "perfecto, ya me ubiqué ||| Escríbeme algo y te respondo!",
@@ -15395,14 +15635,16 @@ Máximo 1 oración por burbuja. Natural y seguro."""
         if _is_business_confirmation:
             _save("user", text)
             if found_online and _biz_url:
-                return _send(
-                    "perfecto, ya te tengo ubicado"
-                    " ||| Escríbeme algo como cliente y te respondo en contexto"
-                )
-            return _send(
-                f"perfecto, ya tengo {business_name}"
-                " ||| Escríbeme algo como cliente y te muestro cómo respondería"
-            )
+                return _send(_lang_text(
+                    "perfecto, ya te tengo ubicado ||| Escríbeme algo como cliente y te respondo en contexto",
+                    "perfect, I’ve got you grounded now ||| send me something like a client and I’ll answer in context",
+                    "perfeito, já entendi vocês ||| me manda algo como cliente e eu respondo em contexto",
+                ))
+            return _send(_lang_text(
+                f"perfecto, ya tengo {business_name} ||| Escríbeme algo como cliente y te muestro cómo respondería",
+                f"perfect, I’ve got {business_name} now ||| send me something like a client and I’ll show you how I’d reply",
+                f"perfeito, já tenho {business_name} ||| me escreve como cliente e eu te mostro como eu responderia",
+            ))
 
         # ── Detección de corrección: "no somos esos / te confundiste / no ese no" ──
         # Ocurre cuando Google encontró info incorrecta o el dueño responde "no" al link
@@ -15415,6 +15657,11 @@ Máximo 1 oración por burbuja. Natural y seguro."""
             # Respuestas al "¿es este tu negocio?"
             "no ese no","no, ese no","ese no es","no es ese","no ese",
             "no somos esos","no somos ese","ese no somos","no nos encontró",
+            "thats not my business","that's not my business","that is not my business",
+            "thats not us","that's not us","that is not us","not us",
+            "wrong business","wrong company","wrong one","not the right one",
+            "that is wrong","thats wrong","that's wrong","you got the wrong one",
+            "sorry what is this","i dont understand","i don't understand",
         ]
         _is_correction = (
             business_name and found_online and
@@ -15459,19 +15706,20 @@ Máximo 1 oración por burbuja. Natural y seguro."""
                 self._demo_sessions[bfound_key] = True
                 self._demo_sessions[burl_key] = retry_url
                 self._demo_sessions[blearn_key] = -1
-                return _send(
-                    "ay, sí, me fui por otro lado"
-                    f" ||| a ver, encontré este otro"
-                    f" ||| {retry_url}"
-                )
+                return _send(_lang_text(
+                    "ay, sí, me fui por otro lado ||| a ver, encontré este otro ||| " + retry_url,
+                    "yep, I drifted to the wrong one ||| this looks much closer ||| " + retry_url,
+                    "sim, fui para o lugar errado ||| esse aqui parece bem mais certo ||| " + retry_url,
+                ))
             # Limpiar la info incorrecta de Google y entrar en modo aprendizaje
             self._demo_sessions[bctx_key]   = ""
             self._demo_sessions[bfound_key] = False
             self._demo_sessions[blearn_key] = 0
-            return _send(
-                "ay perdón, me confundí con otro"
-                " ||| cuéntame tú entonces: a qué se dedica exactamente tu negocio"
-            )
+            return _send(_lang_text(
+                "ay perdón, me confundí con otro ||| cuéntame tú entonces: a qué se dedica exactamente tu negocio",
+                "sorry, I mixed you up with another business ||| tell me what your business does and I’ll ground the demo from there",
+                "foi mal, confundi vocês com outro negócio ||| me conta então com o que o negócio trabalha para eu ajustar a demo",
+            ))
 
         _is_business_name_reject = (
             business_name
@@ -15487,7 +15735,11 @@ Máximo 1 oración por burbuja. Natural y seguro."""
             self._demo_sessions[burl_key] = ""
             self._demo_sessions[blearn_key] = -1
             _save("user", text)
-            return _send("listo, ese no era ||| pásame el nombre correcto del negocio y sigo")
+            return _send(_lang_text(
+                "listo, ese no era ||| pásame el nombre correcto del negocio y sigo",
+                "got it, that wasn’t the right one ||| send me the correct business name and I’ll keep going",
+                "entendi, não era esse ||| me passa o nome certo do negócio e eu continuo",
+            ))
 
         # ── PITCH MODE: preguntas de prospecto B2B ─────────────────────────────────────────
         # Cuando el usuario pregunta sobre el servicio/pitch de Melissa - DETECTAR ANTES
@@ -15545,6 +15797,8 @@ Máximo 1 oración por burbuja. Natural y seguro."""
             "salimos en internet", "estamos en google", "estamos en internet",
             "encontraste el negocio", "nos encontraste en internet",
             "aparecemos", "nos encontraste ahí",
+            "how did you find us", "where did you find us", "did you find us online",
+            "what did you find", "did you find the business", "how did you find the business",
         ]
         _text_low_found_q = text.lower().strip()
         _is_found_question = (
@@ -15562,20 +15816,36 @@ Máximo 1 oración por burbuja. Natural y seguro."""
             _save("user", text)
             if found_online and _biz_url_found and not _is_fallback_found:
                 return _send(
-                    f"sí, los encontré ||| {_biz_url_found} ||| Escríbeme algo y te respondo!"
+                    _lang_text(
+                        f"sí, los encontré ||| {_biz_url_found} ||| Escríbeme algo y te respondo!",
+                        f"yes, I found you here ||| {_biz_url_found} ||| send me something and I’ll reply in character",
+                        f"sim, encontrei vocês aqui ||| {_biz_url_found} ||| me escreve algo e eu te respondo no personagem",
+                    )
                 )
             elif found_online:
-                return _send(
-                    f"sí, encontré información de {business_name} en internet"
-                    f" ||| ya me ubiqué — Escríbeme algo como cliente"
-                )
+                return _send(_lang_text(
+                    f"sí, encontré información de {business_name} en internet ||| ya me ubiqué — Escríbeme algo como cliente",
+                    f"yes, I found public info about {business_name} online ||| I’m grounded now — write to me like a client",
+                    f"sim, achei informação pública de {business_name} online ||| agora me localizei — me escreve como cliente",
+                ))
             else:
-                _no_found_opts = [
-                    f"honestamente no encontré mucho de {business_name} en internet todavía"
-                    f" ||| pero eso no le quita nada — Escríbeme como cliente y te muestro",
-                    f"no aparecen mucho en Google aún"
-                    f" ||| igual puedo mostrarte cómo trabajaría — Escríbeme como cliente",
-                ]
+                if _owner_is_english():
+                    _no_found_opts = [
+                        f"honestly I didn’t find solid public info about {business_name} yet ||| that’s fine — write to me like a client and I’ll show you",
+                        f"you’re not showing up clearly online yet ||| I can still demo it well — text me like a client",
+                    ]
+                elif _owner_is_portuguese():
+                    _no_found_opts = [
+                        f"honestamente eu ainda não achei informação pública forte sobre {business_name} ||| tudo bem — me escreve como cliente e eu te mostro",
+                        f"vocês ainda não aparecem com clareza online ||| mesmo assim eu consigo te mostrar — me chama como cliente",
+                    ]
+                else:
+                    _no_found_opts = [
+                        f"honestamente no encontré mucho de {business_name} en internet todavía"
+                        f" ||| pero eso no le quita nada — Escríbeme como cliente y te muestro",
+                        f"no aparecen mucho en Google aún"
+                        f" ||| igual puedo mostrarte cómo trabajaría — Escríbeme como cliente",
+                    ]
                 return _send(_r.choice(_no_found_opts))
 
         _doc_offer_tokens = ("pdf", "audio", "audios", "nota de voz", "documento", "documentos", "archivo", "imagen", "imagenes", "imágenes")
@@ -15755,6 +16025,10 @@ Muy corta. Sin punto al final. En minúscula. Sin ¿ ni ¡.""",
             "soy un bot","esto es un bot","es un bot","es una ia",
             "para que","para qué","por que","por qué me preguntas",
             "no quiero dar","no te voy a dar","no te doy",
+            "who are you","what are you","what do you do","what is this",
+            "why do you need","why do you need it","why do you need the business name",
+            "i don't want to give","i dont want to give",
+            "i don't talk spanish","i dont talk spanish","english only",
         ]
         _text_low = text.lower().strip()
         _is_meta = any(s in _text_low for s in _meta_signals)
@@ -21216,7 +21490,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Melissa v8.0",
     description="Melissa V8.0 — Agente de Recepción Hipernaturalmente Humana",
-    version="8.1.0",
+    version="8.1.1",
     lifespan=lifespan
 )
 
@@ -21659,7 +21933,7 @@ async def health():
 
     return {
         "status":         "online",
-        "version":        "8.1.0",
+        "version":        "8.1.1",
         "clinic":         clinic.get("name", "sin configurar"),
         "sector":         Config.SECTOR or clinic.get("sector", "otro"),
         "setup_done":     bool(clinic.get("setup_done")),
