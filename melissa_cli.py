@@ -103,6 +103,25 @@ from melissa_cli_bb import (
     cmd_bb_config as _cmd_bb_config_impl,
 )
 
+try:
+    from melissa_i18n import get_i18n, set_language, SUPPORTED_LANGUAGES, LANGUAGE_MENU, detect_user_language
+    _I18N = get_i18n()
+except ImportError:
+    class FakeI18n:
+        def t(self, key, category="ui"): return key
+        def ui(self, key): return key
+        def bot(self, key): return key
+        def demo(self, key): return key
+        def admin(self, key): return key
+        def set_lang(self, lang): pass
+        @property
+        def current_lang(self): return "es"
+        @property
+        def available_languages(self): return {"es": "Español"}
+    _I18N = FakeI18n()
+
+def t(key, category="ui"): return _I18N.t(key, category)
+
 # ══════════════════════════════════════════════════════════════════════════════
 # READLINE + AUTOCOMPLETADO
 # ══════════════════════════════════════════════════════════════════════════════
@@ -121,6 +140,8 @@ COMMANDS = [
     "briefing", "campana", "campaign", "diff", "compare",
     "cost", "costos", "latency", "latencia",
     "env-check", "warmup", "watchdog", "rollforward", "watch", "live", "diagnose", "obs", "skills", "skill", "aprender", "desaprender", "entrenar", "simular-cliente", "skills", "skill", "aprender", "desaprender", "entrenar", "trainer", "simular-cliente", "cliente", "gateway", "control",
+    # i18n — multilingual
+    "language", "idioma", "lang", "locale",
 ]
 
 try:
@@ -646,10 +667,10 @@ def print_logo(compact=False, sector=None):
     print(f"  {q(C.G4, '─' * 54)}")
     print()
 
-def ok(m):    print(f"  {q(C.GRN, '✓')}  {q(C.W, m)}")
-def fail(m):  print(f"  {q(C.RED, '✗')}  {q(C.W, m)}")
-def warn(m):  print(f"  {q(C.YLW, '!')}  {q(C.G1, m)}")
-def info(m):  print(f"  {q(C.P2, '·')}  {q(C.G1, m)}")
+def ok(m):    print(f"  {q(C.GRN, '✓')}  {q(C.W, _I18N.ui('success') + ': ' + str(m))}")
+def fail(m):  print(f"  {q(C.RED, '✗')}  {q(C.W, _I18N.ui('error') + ': ' + str(m))}")
+def warn(m):  print(f"  {q(C.YLW, '!')}  {q(C.G1, _I18N.ui('warning') + ': ' + str(m))}")
+def info(m):  print(f"  {q(C.P2, '·')}  {q(C.G1, str(m))}")
 def dim(m):   print(f"       {q(C.G3, m)}")
 def nl():     print()
 def hr():     print(f"  {q(C.G4, '─' * 54)}")
@@ -11450,6 +11471,33 @@ ROUTES["obs"]          = cmd_obs_stats
 ROUTES["observatory"]  = cmd_obs_stats
 
 
+def _cmd_language(args):
+    """Change UI language / Cambiar idioma de la interfaz."""
+    if args.subcommand and args.subcommand in SUPPORTED_LANGUAGES:
+        set_language(args.subcommand)
+        print(f"  {q(C.GRN, '✓')}  Language set to {SUPPORTED_LANGUAGES[args.subcommand]}")
+        return
+    
+    print()
+    print(f"  {q(C.P1, '✦', bold=True)}  {q(C.W, _I18N.ui('language'), bold=True)}")
+    print(f"  {q(C.G4, '─' * 54)}")
+    print()
+    
+    for code, name in SUPPORTED_LANGUAGES.items():
+        marker = " ◀" if code == _I18N.current_lang else ""
+        emoji = LANGUAGE_MENU.get(code, "🌐")
+        current = " (current)" if code == _I18N.current_lang else ""
+        print(f"    {q(C.W if code == _I18N.current_lang else C.G1, f'{emoji}  {code.upper()}  {name}{current}')}")
+    
+    print()
+    info(f"Current: {_I18N.current_lang.upper()} — {_I18N.ui('language')}")
+    print()
+    print(f"  Usage: melissa lang <code>")
+    print(f"  Example: melissa lang en")
+    print()
+    print("  Available codes: " + ", ".join(SUPPORTED_LANGUAGES.keys()))
+
+
 def main():
     parser = argparse.ArgumentParser(prog="melissa", add_help=False)
     parser.add_argument("command", nargs="?", default="")
@@ -11505,6 +11553,11 @@ def main():
     elif cmd == "logscan":
         args.subcommand = "scan"
         cmd = "logs"
+
+    # i18n — language command
+    if cmd in ("language", "idioma", "lang", "locale"):
+        _cmd_language(args)
+        return
 
     # Manejar subcommand/name
     if args.subcommand and not args.name:

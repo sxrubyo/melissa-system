@@ -107,9 +107,35 @@ try:
     _MELISSA_DOMINO_AVAILABLE = True
 except ImportError:
     _MELISSA_DOMINO_AVAILABLE = False
-
     def build_demo_domino_payload(*args, **kwargs):
         raise RuntimeError("melissa_domino.py no disponible")
+
+try:
+    from melissa_i18n import get_i18n, detect_user_language, SUPPORTED_LANGUAGES
+    _I18N_BOT = get_i18n()
+except ImportError:
+    _I18N_BOT = None
+    def detect_user_language(text): return "es"
+
+
+def _bot_t(key: str) -> str:
+    """Get translated bot message."""
+    if _I18N_BOT:
+        return _I18N_BOT.bot(key)
+    return key
+
+
+def _get_multilingual_greeting(lang: str) -> str:
+    """Get welcome greeting in user's language."""
+    greetings = {
+        "es": "¡Hola! 👋 Soy Melissa, tu asistente virtual. ¿En qué puedo ayudarte?",
+        "en": "Hello! 👋 I'm Melissa, your virtual assistant. How can I help you?",
+        "pt": "Olá! 👋 Sou a Melissa, sua assistente virtual. Como posso ajudar?",
+        "fr": "Bonjour! 👋 Je suis Melissa, votre assistante virtuelle. Comment puis-je vous aider?",
+        "de": "Hallo! 👋 Ich bin Melissa, Ihre virtuelle Assistentin. Wie kann ich Ihnen helfen?",
+    }
+    return greetings.get(lang, greetings["es"])
+
 
 try:
     from smart_handoff import handoff_manager, handle_handoff_admin_command
@@ -8015,23 +8041,36 @@ class MessageAnalyzer:
         return score, temperature
 
     def _detect_language(self, text: str) -> str:
-        """Detección de idioma por heurística rápida."""
+        """Detección de idioma usando módulo i18n o heurística."""
+        if _I18N_BOT:
+            detected = detect_user_language(text)
+            if detected in SUPPORTED_LANGUAGES:
+                return detected
+        
         text_low = text.lower()
-        # Palabras muy comunes en español que no existen en inglés
         ES_WORDS = ["que", "por", "para", "con", "una", "del", "los", "las",
                     "hola", "buenas", "gracias", "claro", "sí", "cómo", "qué"]
         EN_WORDS = ["the", "and", "for", "with", "you", "what", "how",
                     "hello", "thanks", "please", "have", "that", "this"]
         PT_WORDS = ["que", "para", "com", "uma", "obrigado", "boa", "sim",
                     "olá", "você", "como", "fazer"]
+        FR_WORDS = ["bonjour", "merci", "vous", "pour", "avec", "une", "les",
+                    "je", "que", "comment"]
+        DE_WORDS = ["hallo", "danke", "für", "mit", "eine", "die",
+                    "ich", "wie", "was", "haben"]
 
         es = sum(1 for w in ES_WORDS if f" {w} " in f" {text_low} ")
         en = sum(1 for w in EN_WORDS if f" {w} " in f" {text_low} ")
         pt = sum(1 for w in PT_WORDS if f" {w} " in f" {text_low} ")
+        fr = sum(1 for w in FR_WORDS if f" {w} " in f" {text_low} ")
+        de = sum(1 for w in DE_WORDS if f" {w} " in f" {text_low} ")
 
-        if en > es and en > pt:   return "en"
-        if pt > es and pt > en:   return "pt"
-        return "es"  # default
+        scores = {"es": es, "en": en, "pt": pt, "fr": fr, "de": de}
+        best = max(scores.items(), key=lambda x: x[1])
+        
+        if best[1] > 0:
+            return best[0]
+        return "es"
 
     def _clean_text(self, text: str) -> str:
         """Limpia el texto para análisis."""
