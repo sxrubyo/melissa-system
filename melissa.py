@@ -14972,13 +14972,15 @@ No suenes a bot, consultora ni software. No recites tus capacidades como lista.
 Si el dueño todavía no te dijo el nombre del negocio, responde su pregunta primero y al final, de forma natural, pregunta el nombre.
 Usa 2 o 3 burbujas separadas por |||. Cada burbuja cierra una idea completa. Nunca dejes frases cortadas."""
 
+            generic_language_rule = "Mirror the owner's dominant language exactly. If they write in English, German, French, Portuguese or any other language, answer entirely in that same language with natural WhatsApp tone. Never fall back to Spanish just because an internal locale table is missing."
             language_tone = _lang_text(
                 "",
                 "The owner is writing in English. Respond entirely in English. Casual, warm WhatsApp English. Never switch back to Spanish unless the owner does.",
                 "O dono está escrevendo em português. Responda totalmente em português do Brasil, com tom leve e natural de WhatsApp.",
             )
+            system_prompt += "\n\nIDIOMA / LANGUAGE RULE:\n" + generic_language_rule
             if language_tone:
-                system_prompt += "\n\nIDIOMA / LANGUAGE RULE:\n" + language_tone
+                system_prompt += "\n" + language_tone
 
             system_prompt += """
 
@@ -14995,7 +14997,7 @@ REGLAS EXTRA DE ESTA DEMO:
 - si preguntan si aceptas audios, notas de voz, imágenes, PDFs o documentos: responde que sí, cuando el canal lo soporte, puedes transcribir, leer y usar ese contenido
 - si te hacen una pregunta general fuera de contexto, respóndela bien primero y luego vuelve suave a la demo si hace sentido
 - si sospechan estafa o no quieren dar el nombre del negocio, baja la guardia y explica para qué lo pides sin sonar defensiva
-- si dicen que no hablan español o te escriben en inglés, sigues solo en inglés
+- si te hablan en otro idioma, respondes solo en ese idioma y no vuelves al español salvo que la otra persona también lo haga
 - nunca menciones Nova, Clínica de las Américas ni branding heredado
 - no dejes frases colgadas ni respuestas cortadas
 - si te saludan con "hola", "buenas" o parecido, abre natural con "hola, soy Melissa..." o "hola, Melissa por acá..." antes de seguir
@@ -15508,7 +15510,7 @@ INSTRUCCIONES CRÍTICAS:
 Actúa como si llevaras tiempo trabajando ahí. Pide naturalmente que te cuenten del negocio."""
 
             bind_language_tone = _lang_text(
-                "",
+                "Mirror the user's dominant language exactly. If the user writes in any non-Spanish language, reply fully in that same language with natural WhatsApp tone.",
                 "Respond entirely in English. Natural WhatsApp English. Do not switch back to Spanish.",
                 "Responda totalmente em português do Brasil, com tom natural de WhatsApp.",
             )
@@ -21529,7 +21531,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Melissa v8.0",
     description="Melissa V8.0 — Agente de Recepción Hipernaturalmente Humana",
-    version="8.1.1",
+    version="8.2.0",
     lifespan=lifespan
 )
 
@@ -21972,7 +21974,7 @@ async def health():
 
     return {
         "status":         "online",
-        "version":        "8.1.1",
+        "version":        "8.2.0",
         "clinic":         clinic.get("name", "sin configurar"),
         "sector":         Config.SECTOR or clinic.get("sector", "otro"),
         "setup_done":     bool(clinic.get("setup_done")),

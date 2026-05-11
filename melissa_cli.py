@@ -177,7 +177,7 @@ except ImportError:
 # ══════════════════════════════════════════════════════════════════════════════
 # CONFIGURACIÓN
 # ══════════════════════════════════════════════════════════════════════════════
-VERSION = "8.1.1"
+VERSION = "8.2.0"
 MELISSA_HOME = os.getenv("MELISSA_HOME", str(Path.home() / ".melissa"))
 MELISSA_DIR = os.getenv("MELISSA_DIR", str(Path(__file__).resolve().parent))
 INSTANCES_DIR = os.getenv("INSTANCES_DIR", str(Path.home() / "melissa-instances"))

@@ -1,5 +1,11 @@
 # Changelog
 
+## 8.2.0 - 2026-05-11
+
+- añadido soporte multilenguaje real en el runtime público y liberado en npm
+- reforzada la regla de idioma en demo y binding para que Melissa espeje el idioma del dueño aunque no esté en la tabla de locales
+- corregido el empaquetado npm para incluir `melissa_i18n.py`, que antes quedaba fuera del tarball
+
 ## 8.1.1 - 2026-05-10
 
 - corregido el flujo demo-owner en inglés para no tomar frases como `Just English sorry` o `I don't talk Spanish` como nombre de negocio

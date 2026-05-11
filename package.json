@@ -1,6 +1,6 @@
 {
   "name": "melissa-ai",
-  "version": "8.1.1",
+  "version": "8.2.0",
   "description": "Open-source CLI and runtime for building Melissa AI receptionist agents on WhatsApp and Telegram.",
   "license": "MIT",
   "author": "Santiago Rubio",
@@ -23,6 +23,7 @@
     "melissa_cli_bb.py",
     "melissa_tui.py",
     "melissa_sync_fix.py",
+    "melissa_i18n.py",
     "melissa_brain_v10.py",
     "melissa_bridge.py",
     "melissa_domino.py",
