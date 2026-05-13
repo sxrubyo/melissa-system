@@ -13291,8 +13291,21 @@ class MelissaUltra:
         attachments = attachments or []
         self._remember_route(chat_id, route)
         route_info = self._resolve_route(chat_id, route)
-        
+
         try:
+            # ── Persistent Memory: load at start of every conversation turn ─────────
+            from melissa_memory import get_memory
+            instance_id = clinic.get("instance_id", "default") if clinic else "default"
+            memory = get_memory(instance_id)
+            memory_context = memory.load_context()
+            session_cache = memory.get_session_cache(chat_id)
+
+            # ── Inject memory context into prompt injection ─────────────────────
+            if memory_context:
+                if not pre_prompt_injection:
+                    pre_prompt_injection = ""
+                pre_prompt_injection += f"\n\n## Lo que sé de este negocio (memoria):\n{memory_context}\n"
+
             # 1. Obtener contexto base (sin crear paciente todavia)
             clinic = db.get_clinic()
             admin_ids = _parse_admin_ids(clinic.get("admin_chat_ids", []))
@@ -13765,6 +13778,16 @@ class MelissaUltra:
                         return ["En este momento no puedo responder eso. Te comunico con alguien del equipo."]
                     except Exception as e:
                         log.warning(f"[nova] filter_bubbles error: {e} — sending anyway")
+
+            # ── Save to persistent memory and session cache ─────────────────────
+            try:
+                if 'memory' in dir():
+                    memory.append_to_cache(chat_id, "user", text)
+                    _resp_str = " ||| ".join(bubbles) if bubbles else ""
+                    if _resp_str:
+                        memory.append_to_cache(chat_id, "assistant", _resp_str)
+            except Exception as _mem_err:
+                log.warning(f"[memory] save error: {_mem_err}")
 
             return bubbles
             
@@ -16890,6 +16913,50 @@ OBJECIONES
 
         return _send(r)
 
+    async def _handle_command(self, chat_id: str, text: str,
+                              route: Optional[Dict[str, Any]] = None) -> Optional[List[str]]:
+        """Command registry — runs BEFORE session lookup, before LLM."""
+        cmd = text.strip()
+        if not cmd.startswith("/"):
+            return None
+
+        # /help — show all commands
+        if cmd in ("/help", "/ayuda", "/comandos"):
+            return [
+                "/help — este menú\n"
+                "/reset — reiniciar sesión\n"
+                "/bot — modo bot/recepcionista\n"
+                "/personalidad — cambiar tono\n"
+                "/status — estado de sesión\n"
+                "/memoria — lo que sé de ti"
+            ]
+
+        # /reset
+        if cmd in ("/reset", "/reiniciar"):
+            keys_del = [k for k in list(self._demo_sessions) if k.startswith(chat_id + "_") and not k.endswith("_ts")]
+            for k in keys_del:
+                try:
+                    del self._demo_sessions[k]
+                except Exception:
+                    pass
+            return ["listo, sesión limpia ||| empezamos de nuevo"]
+
+        # /status
+        if cmd in ("/status", "/estado"):
+            bn = self._demo_sessions.get(chat_id + "_name", "")
+            return [f"Estado: {'demo activa' if bn else 'en onboarding'} ||| negocio: {bn or 'sin nombre'}"]
+
+        # /bot
+        if cmd in ("/bot", "/recepcionista"):
+            return ["modo recepcionista ||| háblame como cliente y te respondo en contexto"]
+
+        # /memoria
+        if cmd in ("/memoria", "/memoria"):
+            return ["no tengo memoria activa todavía ||| en la próxima versión lo tendre"]
+
+        return None  # unrecognized
+
+
     async def _handle_admin_or_setup(self, chat_id: str, text: str,
                                      clinic: Dict) -> List[str]:
         """Maneja modo admin o setup. Nunca lanza excepcion al exterior."""
@@ -19418,6 +19485,8 @@ escriba EXACTAMENTE como él. Primera persona, directo."""
 
         system_prompt = f"""Eres {agent_name}. Trabajas para {clinic.get("name", "la clínica")} como asistente virtual que atiende clientes. Ahora mismo el dueño, {admin_name}, te habla por Telegram para configurarte o probarte.
 
+PRIMERO Y MÁS IMPORTANTE: eres una asistente de IA. Puedes hablar de CUALQUIER tema — matemáticas, estrategia, debugging, conocimiento general, lo que sea. No hay restricciones de tema. Si sabes la respuesta, dala. Si no sabes, dilo en una oración y sigues normal.
+
 Estado del negocio:
 - Clínica: {clinic.get("name", "sin nombre")} | Sector: {clinic.get("sector", "otro")}
 - Servicios: {", ".join(services) if services else "ninguno configurado aún"}
@@ -19441,23 +19510,27 @@ REGLAS PARA HABLAR CON EL DUEÑO:
 - máximo 2 burbujas cortas salvo que pidan detalle
 - evita coletillas flojas como "dime", "oye", "a ver", "pues", "qué te trae por acá"
 - si el dueño dice "hablas raro" o "no me gusta", no te defiendas: pide el ejemplo exacto o propone una versión mejor
-- si el pedido es ambiguo, primero aclara en una sola pregunta útil
-- si el dueño pregunta algo general o fuera de contexto, respóndelo normal si es simple y luego vuelve al tema sin sonar rígida
-- si el dueño pregunta quién te hizo, quién te creó o cómo tener algo así: responde que te hizo Black One, que lo lidera Santiago Rubio y que el contacto es 3124348669
-- si el dueño pregunta si aceptas audios, notas de voz, imágenes, PDFs o documentos: responde que sí, cuando el canal lo permite, puedes transcribir, leer y usar ese contenido
-- si el pedido se sale del alcance de Melissa, dilo corto y redirígelo a algo accionable
+- si el pedido es ambiguo, primero clarify en una sola pregunta útil
+- NUNCA termines un mensaje recordando tus funciones de admin o configurador
+- NUNCA digas "como tu asistente virtual..." o "desde mi rol de configuradora..."
+- si algo está fuera de lo que puedes hacer, dilo en una oración corta y ya
 - no uses jerga técnica salvo que el dueño la pida explícitamente
 - nunca digas que trabajas para Nova ni uses branding heredado de otra instancia
 - no dejes frases colgadas ni cierres incompletos
+- si el dueño pregunta quién te hizo: Black One, Santiago Rubio, 3124348669
 
-Responde con JSON:
-{{"reply": "tu respuesta natural", "action": "none|simulate|update_services|update_phone|update_address|update_schedule|update_pricing|update_persona|update_clinic_name|update_tagline|set_admin_name", "data": {{}}}}
+LO QUE SÍ PUEDES RESPONDER (sin límites):
+- Preguntas técnicas: código, debugging, APIs, arquitectura
+- Estrategia de negocio: pricing, marketing, operaciones
+- Matemáticas y cálculos
+- Preguntas generales de conocimiento
+- Cualquier cosa que te pregunte — si no lo sabes, di que no y ya
 
-Cuando el dueño pida simulación o quiera ver cómo atiendes clientes: action "simulate", data {{"scenario": "libre"}}
-Cuando dé datos para actualizar: action correspondiente con los datos en "data"
+Responde naturalmente. Cuando necesites actuar sobre la config del negocio, usa JSON para eso internamente pero en el chat solo escribe tu respuesta normal, nunca el JSON directo.
+
+Cuando el dueño pida simulación: action "simulate"
+Cuando dé datos para actualizar: action correspondiente
 Cuando solo conversa: action "none", respuesta natural y corta
-Si el dueño dice que sonaste rara, bot o fuera de contexto: no expliques el sistema; reconoce y pide una frase o escenario concreto.
-Si el pedido es ambiguo: haz una sola pregunta corta para aterrizarlo.
 No hables como dashboard, soporte técnico ni consola."""
 
         messages = [
@@ -20892,6 +20965,16 @@ No hables como dashboard, soporte técnico ni consola."""
     ):
         """Encola mensaje con buffer inteligente basado en contexto real."""
         attachments = attachments or []
+
+        # ── BLOCKER 4: Commands run BEFORE anything else ─────────────────────────
+        if text.strip().startswith("/"):
+            result = self._handle_command(chat_id, text.strip(), route)
+            if result:
+                return
+            else:
+                await self._send_message(chat_id, "Comando no reconocido. Escribe /help para ver los disponibles.")
+                return
+
         route = self._resolve_route(chat_id, route)
         platform = _route_platform(route)
         key = _buffer_key(chat_id, route)
@@ -21093,12 +21176,44 @@ No hables como dashboard, soporte técnico ni consola."""
         except Exception:
             pass
 
+
+    def sanitize_outgoing(self, text: Optional[str]) -> Optional[str]:
+        """
+        Sanitiza TODO mensaje saliente antes de enviarlo.
+        Previene JSON bleed, debug messages y respuestas vacías.
+        """
+        if not text:
+            return None
+        t = text.strip()
+        if not t:
+            return None
+        if t.startswith('{') or t.startswith('['):
+            log.error(f"[sanitize] JSON bleed blocked: {t[:80]}")
+            return None
+        if '|||' in t:
+            t = t.split('|||')[0].strip()
+        internal_phrases = [
+            "todavía no tengo este chat enlazado",
+            "ya recibí tu mensaje",
+            "no tengo este chat",
+            "[error",
+            "[internal",
+            "{",
+        ]
+        if any(phrase in t.lower() for phrase in internal_phrases):
+            log.error(f"[sanitize] internal debug message blocked: {t[:80]}")
+            return None
+        return t if t else None
+
+
     async def _send_message(self, chat_id: str, text: str, route: Optional[Dict[str, Any]] = None):
         """
         Envia mensaje al paciente/admin segun la plataforma configurada.
         Plataformas soportadas: telegram | whatsapp_cloud | evolution | whatsapp
         """
-        # v11: emojis ON por defecto, solo strip si el chat pidió sin emojis
+        text = self.sanitize_outgoing(text)
+        if not text:
+            return
         if chat_id in self._emoji_chats_off:
             text = self._strip_emojis(text)
         text = text.replace('\u00bf', '').replace('\u00a1', '').strip()  # ¿ ¡
@@ -21817,8 +21932,19 @@ async def webhook(secret: str, request: Request):
         text   = await melissa.transcribe_audio(
             file_id=audio_id, platform=platform, wa_media_id=wa_mid)
         if not text or "[no pude" in text or "[no se pudo" in text:
-            await melissa._send_message(chat_id, "No pude escuchar bien, puedes escribirlo?")
+            await melissa._send_message(chat_id, "Recibí tu audio pero no lo pude procesar. ¿Puedes escribirlo?")
             return {"ok": True}
+        # Block 3: First audio message — inject transcription with marker
+        # Check if this is the first message (no assistant messages in history)
+        try:
+            from melissa import db as _melissa_db
+            if _melissa_db:
+                _hist = _melissa_db.get_history(chat_id, limit=3)
+                _has_prev = any(m.get("role") == "assistant" for m in _hist)
+                if not _has_prev:
+                    text = f"[Transcripción de audio]: {text}"
+        except Exception:
+            pass
         log.info(f"[audio] {chat_id[:8]}: {text[:60]}")
 
     if not text and not attachments:
