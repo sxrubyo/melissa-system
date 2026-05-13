@@ -16922,11 +16922,37 @@ OBJECIONES
 
         # /help — show all commands
         if cmd in ("/help", "/ayuda", "/comandos"):
+            # Check if in demo mode with business name
+            bn = self._demo_sessions.get(chat_id + "_name", "")
+            if bn:
+                # Full demo command list
+                return [(
+                    "esto es lo que puedo mostrarte 👇\n\n"
+                    "🎭 Personalidades: /formal · /amigable · /luxury · /directa · /empatica · /experta · /juvenil\n\n"
+                    "💬 Situaciones reales:\n"
+                    "objecion — cliente difícil\n"
+                    "cita — agendamiento completo\n"
+                    "cierre — técnica de cierre\n"
+                    "competencia — ya fui a otro lado\n"
+                    "precio — está muy caro\n"
+                    "prueba — mándame el más difícil\n"
+                    "bot — soy un bot?\n"
+                    "2am — respuesta a las 2am\n\n"
+                    "📊 Demo y datos:\n"
+                    "stats — impacto en números\n"
+                    "memoria — qué recuerdo de ti\n"
+                    "menu — modo bot con emojis\n\n"
+                    "⚙️ Ajustes:\n"
+                    "usa emojis / sin emojis\n"
+                    "siguiente — próximo truco\n"
+                    "/modelo — cambiar el modelo\n"
+                    "reset — empezar de nuevo\n\n"
+                    "escribe sin slash para activar"
+                )]
             return [
                 "/help — este menú\n"
                 "/reset — reiniciar sesión\n"
                 "/bot — modo bot/recepcionista\n"
-                "/personalidad — cambiar tono\n"
                 "/status — estado de sesión\n"
                 "/memoria — lo que sé de ti"
             ]
