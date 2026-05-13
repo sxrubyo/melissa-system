@@ -15283,6 +15283,12 @@ TONO: Cálido, profesional, como receptionistareal.
             if any(t in text.lower() for t in _off_topic_demo):
                 return await _demo_owner_onboarding_reply()
 
+        # ── SANITY CHECK: evitar que pregunte por negocio si ya lo tenemos ──────
+        # Doble verificación para evitar el bug de dupla respuesta en demo
+        actual_business_name = self._demo_sessions.get(bname_key, "")
+        if actual_business_name:
+            business_name = actual_business_name
+
         # ── PASO 1: Recibe nombre → busca en web → entra en personaje ─────────
         # HUMANFIX: ventana ampliada de 2 a 12 — el nombre puede llegar tarde
         # si en los primeros turnos el dueño preguntó qué es o se confundió
