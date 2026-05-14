@@ -46,6 +46,32 @@ class MelissaAdmin:
                 if result:
                     return result
 
+            # Google OAuth code detection
+            try:
+                from melissa_google_auth import is_oauth_code, exchange_code_for_tokens, get_oauth_url
+                instance_id_auth = getattr(self.melissa, "_instance_id", "default")
+                # Admin sends OAuth code
+                if is_oauth_code(text.strip()):
+                    tokens = await exchange_code_for_tokens(text.strip(), instance_id_auth)
+                    if tokens:
+                        return ["✅ Calendario de Google conectado exitosamente!", "Ya puedo ver disponibilidad y agendar citas directamente."]
+                    else:
+                        return ["❌ El código no funcionó. Puede que haya expirado.", "Escribe 'conectar calendario' y te genero uno nuevo."]
+                # Admin asks to connect calendar
+                cal_triggers = ["conectar calendario", "google calendar", "vincular calendario", "enlace oauth", "conectar google"]
+                if any(t in text.lower() for t in cal_triggers):
+                    url = get_oauth_url(instance_id_auth)
+                    if url:
+                        return [
+                            "Listo! Abre este enlace en tu navegador:",
+                            url,
+                            "Inicia sesión con la cuenta de Google del negocio, acepta los permisos, y pégame aquí el código que te aparece."
+                        ]
+                    else:
+                        return ["Para conectar Google Calendar necesito que configures GOOGLE_CLIENT_ID y GOOGLE_CLIENT_SECRET en el .env"]
+            except ImportError:
+                pass
+
             # Setup pendiente
             if not clinic.get("setup_done"):
                 return await self._handle_setup(chat_id, text, clinic)

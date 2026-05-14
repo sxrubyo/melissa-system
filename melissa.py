@@ -19694,15 +19694,23 @@ No hables como dashboard, soporte técnico ni consola."""
         """Encola mensaje con buffer inteligente basado en contexto real."""
         attachments = attachments or []
 
-        # ── BLOCKER 4: Commands run BEFORE anything else ─────────────────────────
+        # ── Commands: process inline (no buffer needed for slash commands)
         if text.strip().startswith("/"):
-            result = await self._handle_command(chat_id, text.strip(), route)
-            if result:
-                await self._send_bubbles(chat_id, result, message_id="", route=route)
-                return
-            else:
-                await self._send_message(chat_id, "Comando no reconocido. Escribe /help para ver los disponibles.")
-                return
+            try:
+                from melissa_commands import get_command_handler
+                instance_id = getattr(self, "_instance_id", "default")
+                clinic = db.get_clinic()
+                admin_ids = _parse_admin_ids(clinic.get("admin_chat_ids", []))
+                is_admin = (chat_id in admin_ids or db.get_admin(chat_id) is not None)
+                cmd_handler = get_command_handler(instance_id)
+                result = await cmd_handler.handle(chat_id, text.strip(), is_admin=is_admin, clinic=clinic, db=db)
+                if result:
+                    await self._send_bubbles(chat_id, result, message_id="", route=route)
+                    return
+            except Exception as e:
+                log.warning(f"[command] error: {e}")
+            # If command not recognized, let it pass to process_message as normal text
+            pass
 
         # ── MODO SIMULACIÓN ──────────────────────────────────────────────────
         if self.simulator and self.simulator.is_simulating(chat_id):

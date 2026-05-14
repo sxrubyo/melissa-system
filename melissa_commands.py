@@ -106,6 +106,17 @@ class CommandHandler:
 
     async def _handle_admin(self, cmd: str, args: str, chat_id: str,
                             clinic: Optional[Dict], db) -> Optional[List[str]]:
+        if cmd in ("/ayuda", "/help"):
+            lines = ["🔧 Comandos Admin:"]
+            for c, desc in ADMIN_COMMANDS.items():
+                lines.append(f"  {c} — {desc}")
+            lines.append("\n📋 También puedes:")
+            lines.append("  'conectar calendario' — vincular Google Calendar")
+            lines.append("  'investiga X' — buscar en internet")
+            lines.append("  'modo luxury/formal/casual' — cambiar tono")
+            lines.append("  Enviar archivos TXT/PDF/JSON — los leo y aprendo")
+            return ["\n".join(lines)]
+
         if cmd == "/status":
             return [f"Instancia: {self.instance_id}\nEstado: {'pausada' if self._paused else 'activa'}"]
 
