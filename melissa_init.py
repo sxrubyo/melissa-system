@@ -72,12 +72,19 @@ def step_header(n, total, title):
 def run_wizard():
     clear()
     print(f"""
-  {PURPLE}{BOLD}╔╦╗╔═╗╦  ╦╔═╗╔═╗╔═╗{R}
-  {PURPLE}{BOLD}║║║║╣ ║  ║╚═╗╚═╗╠═╣{R}
-  {PURPLE}{BOLD}╩ ╩╚═╝╩═╝╩╚═╝╚═╝╩ ╩{R}
+  {PURPLE}{BOLD}███╗   ███╗███████╗██╗     ██╗███████╗███████╗ █████╗{R}
+  {PURPLE}{BOLD}████╗ ████║██╔════╝██║     ██║██╔════╝██╔════╝██╔══██╗{R}
+  {PURPLE}{BOLD}██╔████╔██║█████╗  ██║     ██║███████╗███████╗███████║{R}
+  {PURPLE}{BOLD}██║╚██╔╝██║██╔══╝  ██║     ██║╚════██║╚════██║██╔══██║{R}
+  {PURPLE}{BOLD}██║ ╚═╝ ██║███████╗███████╗██║███████║███████║██║  ██║{R}
+  {PURPLE}{BOLD}╚═╝     ╚═╝╚══════╝╚══════╝╚═╝╚══════╝╚══════╝╚═╝  ╚═╝{R}
 
-  {BOLD}Setup{R} — configurar nueva instancia.
-  {DIM}Usa ↑/↓ para elegir, Enter para confirmar.{R}
+  {DIM}Multi-sector. Multi-channel. Always on.{R}
+  {PURPLE}✦{R} Melissa v{VERSION}
+  {'─' * 54}
+
+  {BOLD}Setup{R} — new instance in 2 minutes.
+  {DIM}Use ↑/↓ to navigate, Enter to confirm.{R}
 """)
 
     if not confirm("Empezamos?"):

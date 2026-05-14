@@ -29,17 +29,17 @@ except: pass
 # ─── ASCII Art ────────────────────────────────────────────────────────────────
 
 LOGO_FULL = """\
-[m]        ╭───╮
-       ╭│ ◉ │──╮[/m]    [bold #b48ead]┌┬┐┌─┐┬  ┬┌─┐┌─┐┌─┐[/bold #b48ead]
-[m]       │╰───╯  │[/m]    [bold #b48ead]│││├┤ │  │└─┐└─┐├─┤[/bold #b48ead]
-[m]       │ ╭───╮ │[/m]    [bold #b48ead]┴ ┴└─┘┴─┘┴└─┘└─┘┴ ┴[/bold #b48ead]
-[m]       ╰─│   │─╯[/m]
-[m]         ╰───╯[/m]"""
+[m]  ███╗   ███╗███████╗██╗     ██╗███████╗███████╗ █████╗
+  ████╗ ████║██╔════╝██║     ██║██╔════╝██╔════╝██╔══██╗
+  ██╔████╔██║█████╗  ██║     ██║███████╗███████╗███████║
+  ██║╚██╔╝██║██╔══╝  ██║     ██║╚════██║╚════██║██╔══██║
+  ██║ ╚═╝ ██║███████╗███████╗██║███████║███████║██║  ██║
+  ╚═╝     ╚═╝╚══════╝╚══════╝╚═╝╚══════╝╚══════╝╚═╝  ╚═╝[/m]"""
 
-LOGO_CHAT = """\
-[m]    ╭───╮
-    │ ◉ │[/m]  [bold]melissa[/bold] [dim]chat[/dim]
-[m]    ╰─┬─╯[/m]"""
+LOGO_SMALL = """\
+[m]    ╔╦╗╔═╗╦  ╦╔═╗╔═╗╔═╗
+    ║║║║╣ ║  ║╚═╗╚═╗╠═╣
+    ╩ ╩╚═╝╩═╝╩╚═╝╚═╝╩ ╩[/m]"""
 
 TAGLINES = [
     "AI receptionist for business",
@@ -52,10 +52,10 @@ TAGLINES = [
 
 # ─── Banner ──────────────────────────────────────────────────────────────────
 
-def banner():
+def banner(big=False):
     con.print()
-    con.print(LOGO_FULL)
-    con.print(f"    [dim]v{VERSION}[/dim]  [m.dim]{random.choice(TAGLINES)}[/m.dim]")
+    con.print(LOGO_FULL if big else LOGO_SMALL)
+    con.print(f"    [dim]v{VERSION}[/dim]  [m.dim]— {random.choice(TAGLINES)}[/m.dim]")
     con.print()
     # Status
     procs = _pm2()
@@ -70,8 +70,8 @@ def banner():
 
 # ─── Help ────────────────────────────────────────────────────────────────────
 
-def cmd_help(args=""):
-    banner()
+def cmd_help(args="", big=False):
+    banner(big=big)
     sections = [
         ("CORE", [
             ("new",      "create instance"),
@@ -256,7 +256,7 @@ def main():
     if first_run() and not (len(sys.argv)>1 and sys.argv[1] in ("help","--help","-h","-v","--version")):
         onboard()
     if len(sys.argv) <= 1:
-        cmd_help()
+        cmd_help(big=True)
     else:
         route(sys.argv[1], " ".join(sys.argv[2:]))
 
