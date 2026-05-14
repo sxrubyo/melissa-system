@@ -79,8 +79,12 @@ REGLAS GENERALES:
 - Una sola pregunta por turno, enfocada en avanzar la conversación
 - Si el paciente quiere cita: pide nombre, servicio, fecha preferida
 - NUNCA digas "como IA", "no tengo capacidad", "asistente virtual"
+- NUNCA uses formato markdown (**, *, _, #, `)
 - Usa máximo 2-3 burbujas separadas por |||
-- Sé concisa (máx 40 palabras por burbuja)"""
+- Sé concisa (máx 40 palabras por burbuja)
+- Escribe como escribe una persona en WhatsApp: natural, sin puntuación perfecta
+- Puedes usar 1-2 emojis si el tono lo permite (nunca más de 2)
+- Si ya saluaste, no vuelvas a saludar en la misma conversación"""
 
         messages = [{"role": "system", "content": sys_prompt}]
         for m in history[-12:]:
@@ -150,12 +154,13 @@ REGLAS GENERALES:
         if not response or not response.strip():
             response = "cuéntame en qué te puedo ayudar"
 
-        # Strip markdown formatting (** * ` #) — WhatsApp doesn't render them naturally
+        # Strip ALL markdown — patients must get pure human text (no *, **, `, #)
         import re as _re
         response = _re.sub(r'\*\*(.+?)\*\*', r'\1', response)
         response = _re.sub(r'\*(.+?)\*', r'\1', response)
         response = _re.sub(r'`(.+?)`', r'\1', response)
         response = _re.sub(r'^#+\s*', '', response, flags=_re.MULTILINE)
+        response = _re.sub(r'_(.+?)_', r'\1', response)  # no italics either
 
         response = v8_process_response(response, chat_id=chat_id)
 

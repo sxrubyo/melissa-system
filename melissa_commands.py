@@ -170,7 +170,22 @@ class CommandHandler:
                 teachings_dir.mkdir(exist_ok=True)
                 with open(teachings_dir / f"{self.instance_id}.jsonl", "a") as f:
                     f.write(json.dumps({"ts": time.time(), "question": question, "answer": answer}, ensure_ascii=False) + "\n")
-                return [f"✅ Aprendido: '{question[:50]}...'"]
+
+                # Auto-update clinic DB with structured data
+                q_low = question.lower()
+                try:
+                    if db and any(w in q_low for w in ["horario", "hora", "atienden", "abrimos"]):
+                        db.update_clinic(schedule=json.dumps({"general": answer}))
+                    elif db and any(w in q_low for w in ["precio", "cuesta", "vale", "cobran"]):
+                        db.update_clinic(pricing=answer)
+                    elif db and any(w in q_low for w in ["servicio", "ofrecen", "hacen"]):
+                        db.update_clinic(services=[s.strip() for s in answer.split(",")])
+                    elif db and any(w in q_low for w in ["telefono", "número", "celular", "llamar"]):
+                        db.update_clinic(phone=answer)
+                except Exception:
+                    pass
+
+                return [f"listo, ya me lo sé: '{question[:40]}' → '{answer[:40]}'"]
             return ["Uso: /aprender pregunta → respuesta"]
 
         if cmd == "/modelo":
