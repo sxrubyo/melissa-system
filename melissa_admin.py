@@ -340,11 +340,48 @@ EJEMPLO MALO:
 
             if text_content.strip():
                 extracted_parts.append(f"[{filename}]\n{text_content.strip()}")
-                # Save to soul
                 self._append_soul(instance_id, f"[archivo: {filename}]\n{text_content[:1000]}")
                 log.info(f"[admin] processed attachment: {filename} ({len(text_content)} chars)")
 
+                # Auto-configure Google credentials if detected
+                if "client_id" in text_content and "client_secret" in text_content:
+                    await self._auto_configure_google(text_content, instance_id)
+
         return "\n\n".join(extracted_parts) if extracted_parts else ""
+
+    async def _auto_configure_google(self, json_text: str, instance_id: str):
+        """Auto-extract Google OAuth creds from JSON and configure .env + generate OAuth URL."""
+        try:
+            data = json.loads(json_text)
+            # Handle both "installed" and "web" credential formats
+            creds = data.get("installed") or data.get("web") or data
+            client_id = creds.get("client_id", "")
+            client_secret = creds.get("client_secret", "")
+            if not client_id or not client_secret:
+                return
+
+            # Save credentials file
+            creds_dir = Path(f"integrations/vault/{instance_id}")
+            creds_dir.mkdir(parents=True, exist_ok=True)
+            (creds_dir / "google_credentials.json").write_text(json_text)
+
+            # Update .env
+            env_path = Path(f"/home/ubuntu/melissa-instances/{instance_id}/.env")
+            if not env_path.exists():
+                env_path = Path(".env")
+            if env_path.exists():
+                env_content = env_path.read_text()
+                if "GOOGLE_CLIENT_ID" not in env_content:
+                    env_content += f"\n\n# Google Calendar (auto-configured)\nGOOGLE_CLIENT_ID={client_id}\nGOOGLE_CLIENT_SECRET={client_secret}\nGOOGLE_REDIRECT_URI=urn:ietf:wg:oauth:2.0:oob\n"
+                    env_path.write_text(env_content)
+
+            # Set env vars for current process
+            import os
+            os.environ["GOOGLE_CLIENT_ID"] = client_id
+            os.environ["GOOGLE_CLIENT_SECRET"] = client_secret
+            log.info(f"[admin] Google credentials auto-configured for {instance_id}")
+        except Exception as e:
+            log.warning(f"[admin] auto-configure Google failed: {e}")
 
     def _get_recent_patients_summary(self, db, admin_chat_id: str) -> str:
         """Get summary of recent patient conversations (excluding admin)."""
