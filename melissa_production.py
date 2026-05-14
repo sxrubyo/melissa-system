@@ -155,12 +155,8 @@ REGLAS GENERALES:
             if confidence < 0.5 and admin_jid:
                 await uncertainty_detector.log_gap(instance_id, text, response, confidence, chat_id)
                 alert_msg = (
-                    f"⚠️ Un paciente preguntó algo que no supe responder:\n\n"
-                    f"*Pregunta:* \"{text[:200]}\"\n"
-                    f"*Yo respondí:* \"{response[:150]}\"\n"
-                    f"*Confianza:* {confidence:.0%}\n\n"
-                    f"Si me das la respuesta correcta, la aprendo y la próxima vez la respondo sola.\n"
-                    f"Escribe: /aprender {text[:80]} → [respuesta correcta]"
+                    f"oye, me acaba de escribir un paciente preguntando: \"{text[:150]}\"\n\n"
+                    f"no tengo esa info todavía, qué le digo?"
                 )
                 try:
                     await self.melissa._send_message(admin_jid, alert_msg)

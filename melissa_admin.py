@@ -217,6 +217,29 @@ EJEMPLO MALO:
         """Extraer conocimiento y APLICAR cambios de personalidad en tiempo real."""
         text_low = admin_text.lower()
 
+        # ── Detectar URLs y scrapear contenido ──
+        import re as _re
+        urls = _re.findall(r'https?://[^\s<>"\']+', admin_text)
+        if urls:
+            try:
+                import httpx
+                for url in urls[:2]:
+                    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+                        r = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+                        if r.status_code == 200:
+                            # Extract text from HTML
+                            html = r.text[:10000]
+                            # Simple HTML text extraction
+                            text_only = _re.sub(r'<script[^>]*>.*?</script>', '', html, flags=_re.S)
+                            text_only = _re.sub(r'<style[^>]*>.*?</style>', '', text_only, flags=_re.S)
+                            text_only = _re.sub(r'<[^>]+>', ' ', text_only)
+                            text_only = _re.sub(r'\s+', ' ', text_only).strip()[:3000]
+                            if text_only:
+                                self._append_soul(instance_id, f"[web: {url}]\n{text_only[:1500]}")
+                                log.info(f"[admin] scraped URL: {url} ({len(text_only)} chars)")
+            except Exception as e:
+                log.debug(f"[admin] URL scrape failed: {e}")
+
         # ── Detectar REGLAS del admin ("si preguntan X, pregúntame") ──
         rule_signals = [
             "si preguntan", "si alguien pregunta", "cuando pregunten",
@@ -291,24 +314,25 @@ EJEMPLO MALO:
 
     def _detect_tone_from_text(self, text_low: str) -> Optional[str]:
         """Detect requested tone from admin message."""
-        tone_map = {
-            "luxury": "luxury",
-            "elegante": "luxury",
-            "sofisticada": "luxury",
-            "exclusiva": "luxury",
-            "formal": "formal",
-            "profesional": "formal",
-            "serio": "formal",
-            "informal": "casual",
-            "casual": "casual",
-            "relajada": "casual",
-            "parche": "casual",
-            "alegre": "warm_energetic",
-            "cálida": "colombian_warm",
-            "calida": "colombian_warm",
-            "colombiana": "colombian_warm",
-        }
-        for keyword, tone in tone_map.items():
+        # Order matters: check longer/specific keywords FIRST
+        checks = [
+            ("informal", "casual"),
+            ("casual", "casual"),
+            ("relajada", "casual"),
+            ("parche", "casual"),
+            ("luxury", "luxury"),
+            ("elegante", "luxury"),
+            ("sofisticada", "luxury"),
+            ("exclusiva", "luxury"),
+            ("profesional", "formal"),
+            ("formal", "formal"),
+            ("serio", "formal"),
+            ("alegre", "warm_energetic"),
+            ("cálida", "colombian_warm"),
+            ("calida", "colombian_warm"),
+            ("colombiana", "colombian_warm"),
+        ]
+        for keyword, tone in checks:
             if keyword in text_low:
                 return tone
         return None
