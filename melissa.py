@@ -14213,7 +14213,11 @@ INSTRUCCIONES CRÍTICAS:
 - Si la info no es claramente de este negocio, ignórala y actúa sin info."""
             else:
                 ctx_hint = f"""No encontraste información en internet sobre "{nombre}".
-Actúa como si llevaras tiempo trabajando ahí. Pide naturalmente que te cuenten del negocio."""
+NO finjas que ya sabes del negocio. Sé honesta:
+- Di que buscaste pero no encontraste mucho
+- Pide que te manden el link de su web o redes sociales
+- O pregunta directamente: qué servicios ofrecen, a quién atienden
+- Esto es MUCHO mejor que fingir — genera confianza real"""
 
             bind_language_tone = _lang_text(
                 "Mirror the user's dominant language exactly. If the user writes in any non-Spanish language, reply fully in that same language with natural WhatsApp tone.",
@@ -14230,21 +14234,15 @@ SESIÓN ACTIVA: Tienes una sesión de demo de 30 minutos con este usuario. NO es
 
 {"REGLA DE IDIOMA:\n" + bind_language_tone if bind_language_tone else ""}
 
-TAREA: Generar el momento de activación en 3 burbujas (|||).
+{"TAREA: Generar respuesta en 3 burbujas (|||). ENCONTRASTE INFO REAL:" if found else "TAREA: Generar respuesta en 3 burbujas (|||). NO ENCONTRASTE NADA EN INTERNET:"}
 
-{"CON INFO REAL:" if found else "SIN INFO:"}
+{'''Burbuja 1: menciona 1-2 datos reales del negocio. NO digas "según Google". Habla como si ya supieras.
+Burbuja 2: "ya me ubiqué con cómo tendría que sonar" (breve)
+Burbuja 3: "escríbeme como si fueras un cliente y te muestro cómo respondería"''' if found else '''Burbuja 1: "listo, tengo el nombre" + reconoce que no encontraste mucho online
+Burbuja 2: pide su link de web, instagram, o que te cuente brevemente qué hacen y a quién atienden
+Burbuja 3: "con eso me basta para entrar en personaje y mostrarte cómo suena"
 
-{"Burbuja 1: demuestra que los conoces — di 1-2 datos específicos y reales que encontraste. NO digas 'encontré en Google' ni 'según mis búsquedas'. Habla como si ya te hubieras ubicado con ellos." if found else "Burbuja 1: di que ya te ubicastes con el negocio, con confianza y sin sonar a sistema."}
-  Ejemplo hospital: "ya tengo Hospital Pablo Tobón Uribe, más de 80 especialidades, referente en el país"
-  Ejemplo clínica: "ya tengo Clínica Dermosalud, se especializan en procedimientos faciales no invasivos"
-  Ejemplo tienda: "ya tengo Fabricamas, fabricantes directos de bases y espaldares en Itagüí"
-
-Burbuja 2: deja claro que ya entiendes cómo tendría que sonar el chat — breve y seguro.
-  "ya me ubiqué con cómo tendría que hablar acá"
-
-Burbuja 3: invita a probarte como cliente real — con intriga, no como presentación.
-  "Escríbeme algo como si fueras un cliente y te respondo!"
-  O algo más específico al negocio si tiene sentido.
+Ejemplo SIN INFO: "listo, tengo [nombre] ||| no encontré mucho online, me pasas el link de tu web o insta? o cuéntame brevemente qué hacen ||| con eso ya me meto en personaje y te muestro cómo respondería"'''}
 
 SIN mayúscula inicial (a menos que sea nombre propio). Sin punto al final. Sin emojis. Sin ¿ ni ¡. Sin signos dobles de apertura. Sin frases de bot o asistente virtual.
 Máximo 1 oración por burbuja. Natural y seguro."""
