@@ -27,6 +27,14 @@ from typing import (
 import secrets
 import uuid
 
+from melissa_demo import MelissaDemo
+from melissa_admin import MelissaAdmin, AuthEngine, AdminLearningEngine, SimulationEngine, SelfImprovementEngine
+from melissa_production import MelissaProduction
+from melissa_utils import (
+    is_activation_token, is_invite_token, hash_password, verify_password, 
+    _parse_admin_ids, extract_model_request_from_text, normalize_model_arg
+)
+
 from dotenv import load_dotenv
 
 
@@ -116,6 +124,24 @@ try:
 except ImportError:
     _I18N_BOT = None
     def detect_user_language(text): return "es"
+
+try:
+    from melissa_session import SessionManager
+    _SESSION_MANAGER_AVAILABLE = True
+except ImportError:
+    _SESSION_MANAGER_AVAILABLE = False
+
+try:
+    from melissa_audio import AudioHandler
+    _AUDIO_HANDLER_AVAILABLE = True
+except ImportError:
+    _AUDIO_HANDLER_AVAILABLE = False
+
+try:
+    from melissa_generator import GeneratorManager
+    _GENERATOR_MANAGER_AVAILABLE = True
+except ImportError:
+    _GENERATOR_MANAGER_AVAILABLE = False
 
 
 def _bot_t(key: str) -> str:
@@ -3108,9 +3134,11 @@ class Config:
 
     # ── APIs de búsqueda ──────────────────────────────────────────────────────
     BRAVE_API_KEY      = os.getenv("BRAVE_API_KEY", "")
+    BRAVE_API_KEYS     = _collect_env_series("BRAVE_API_KEY")
     APIFY_API_KEY      = os.getenv("APIFY_API_KEY", "")
     APIFY_API_KEYS     = _collect_env_series("APIFY_API_KEY")
     SERP_API_KEY       = os.getenv("SERP_API_KEY", "")
+    SERP_API_KEYS      = _collect_env_series("SERP_API_KEY")
 
     # ── Calendario ────────────────────────────────────────────────────────────
     # Calendly — link directo que Melissa puede enviar al paciente
@@ -5358,48 +5386,50 @@ class MultilingualHandler:
     LANGUAGE_PROFILES = {
         "en": {
             "name": "English",
-            "tone_note": "Client is writing in English. Respond entirely in English. Same warm, natural tone — like a real person texting, not a bot. No formal British English — use casual American/Latin English.",
-            "greetings": ["hey", "hi", "hello", "hi there"],
-            "closings": ["just let me know", "here if you need anything", "whenever you're ready"],
-            "yes_words": ["yes", "yep", "sure", "ok", "okay", "sounds good"],
+            "tone_note": "Client is writing in English. Respond entirely in English. Use a natural, warm tone. Avoid sounding like a bot. Use casual American/Latin phrasing. If the user uses slang, mirror it subtly.",
+            "greetings": ["hey", "hi", "hello", "hi there", "how's it going?"],
+            "closings": ["let me know", "happy to help", "have a great day"],
+            "yes_words": ["yes", "yep", "sure", "ok", "okay", "sounds good", "perfect"],
         },
         "es": {
             "name": "Español",
-            "tone_note": "",  # Default — las instrucciones principales ya son en español
-            "greetings": ["hola", "buenas", "hey"],
-            "closings": ["cualquier cosa me cuentas", "estoy por acá"],
-            "yes_words": ["sí", "si", "dale", "claro", "ok"],
+            "tone_note": "Cliente en español. Mantén el trato cálido y humano. Evita sonar como un call center. Usa frases cortas y directas.",
+            "greetings": ["hola", "buenas", "qué tal?", "hola!", "un gusto"],
+            "closings": ["quedo atenta", "cualquier duda me dices", "un saludo"],
+            "yes_words": ["sí", "si", "dale", "claro", "ok", "perfecto"],
         },
         "pt": {
             "name": "Português",
-            "tone_note": "Cliente escrevendo em português. Responda em português brasileiro. Tom casual, como se fosse uma pessoa real no WhatsApp. Sem formalidades.",
-            "greetings": ["oi", "olá", "bom dia", "boa tarde"],
-            "closings": ["qualquer coisa me chama", "estou por aqui"],
-            "yes_words": ["sim", "ok", "claro", "com certeza"],
+            "tone_note": "Cliente em português. Responda em português brasileiro (PT-BR). Use um tom amigável e casual. Evite formalidades excessivas. Sinta-se como uma pessoa real no WhatsApp.",
+            "greetings": ["oi", "olá", "tudo bem?", "bom dia", "boa tarde"],
+            "closings": ["estou aqui se precisar", "qualquer coisa me chama", "um abraço"],
+            "yes_words": ["sim", "ok", "claro", "com certeza", "perfeito"],
         },
     }
 
     def detect(self, text: str) -> str:
-        """Detecta idioma con alta precisión."""
-        text_lower = text.lower()
+        """Detecta idioma con heurísticas y fallback al LLM si es necesario."""
+        text_lower = text.lower().strip()
+        if not text_lower: return "es"
 
-        EN_INDICATORS = ["the ", "and ", "for ", "with ", "you ", "what ", "how ",
-                         "hello", "thanks", "please", "can i", "i want", "i need",
-                         "do you", "is it", "are you", "how much", "when can"]
-        PT_INDICATORS = ["você", "boa ", "obrigad", "tudo bem", "gostaria",
-                         "preciso", "pode", "tem ", "qual ", "quero"]
-        ES_INDICATORS = ["hola", "buenas", "qué", "cómo", "cuándo", "gracias",
-                         "tengo", "quiero", "necesito", "cuánto", "pueden"]
+        EN_INDICATORS = ["the ", "and ", "with ", "you ", "what ", "how ", "hey", "hello", "thanks", "please", "can i", "i want", "i need", "do you", "is it", "are you", "how much", "when can", "today", "tomorrow", "appointment"]
+        PT_INDICATORS = ["você", "boa ", "obrigad", "tudo bem", "gostaria", "preciso", "pode", "tem ", "qual ", "quero", "agendar", "horário", "amanhã", "obrigado", "obrigada"]
+        ES_INDICATORS = ["hola", "buenas", "qué", "cómo", "cuándo", "gracias", "tengo", "quiero", "necesito", "cuánto", "pueden", "cita", "horario", "mañana", "ayer"]
 
         en_score = sum(1 for i in EN_INDICATORS if i in text_lower)
         pt_score = sum(1 for i in PT_INDICATORS if i in text_lower)
         es_score = sum(1 for i in ES_INDICATORS if i in text_lower)
 
+        # Si hay empate o score bajo, usamos la última detección guardada o por defecto es
         if en_score > es_score and en_score > pt_score:
             return "en"
-        if pt_score > es_score:
+        if pt_score > es_score and pt_score > en_score:
             return "pt"
         return "es"
+
+    def get_tone_instruction(self, lang: str) -> str:
+        profile = self.LANGUAGE_PROFILES.get(lang, self.LANGUAGE_PROFILES["es"])
+        return profile["tone_note"]
 
     def get_tone_injection(self, lang: str) -> str:
         """Retorna instrucción de idioma para el system prompt."""
@@ -6426,6 +6456,15 @@ class DatabaseManager:
                 updated_at TEXT DEFAULT (datetime('now'))
             );
 
+            -- Instrucciones naturales del admin
+            CREATE TABLE IF NOT EXISTS admin_instructions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id TEXT NOT NULL,
+                instruction TEXT NOT NULL,
+                is_active INTEGER DEFAULT 1,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+
             -- Playbooks aprendidos del dueño
             -- Trigger + ejemplo exacto de cómo responder
             CREATE TABLE IF NOT EXISTS behavior_playbooks (
@@ -6527,6 +6566,36 @@ class DatabaseManager:
                   json.dumps(analysis or {}, ensure_ascii=False), 
                   model, latency))
     
+    def add_admin_instruction(self, chat_id: str, instruction: str):
+        """Guarda una nueva instruccion natural del admin."""
+        try:
+            with self._conn() as c:
+                c.execute(
+                    "INSERT INTO admin_instructions (chat_id, instruction) VALUES (?, ?)",
+                    (chat_id, instruction)
+                )
+        except Exception as e:
+            log.warning(f"add_admin_instruction error: {e}")
+
+    def get_active_admin_instructions(self) -> List[str]:
+        """Obtiene todas las instrucciones activas del admin."""
+        try:
+            with self._conn() as c:
+                rows = c.execute(
+                    "SELECT instruction FROM admin_instructions WHERE is_active=1 ORDER BY created_at ASC"
+                ).fetchall()
+                return [r["instruction"] for r in rows]
+        except Exception:
+            return []
+
+    def clear_admin_instructions(self):
+        """Desactiva todas las instrucciones actuales."""
+        try:
+            with self._conn() as c:
+                c.execute("UPDATE admin_instructions SET is_active=0")
+        except Exception:
+            pass
+
     def get_history(self, chat_id: str, limit: int = None) -> List[Dict]:
         limit = limit or Config.MAX_CONTEXT_MESSAGES
         with self._conn() as c:
@@ -8610,8 +8679,9 @@ Dirección: {clinic.get('address', 'No disponible')}"""
 class ResponseGenerator:
     """Generador de respuestas humanizadas."""
     
-    def __init__(self, llm: LLMEngine):
+    def __init__(self, llm: LLMEngine, learning_engine: AdminLearningEngine = None):
         self.llm = llm
+        self.learning = learning_engine
     
     async def generate(self,
                       message: str,
@@ -8631,13 +8701,19 @@ class ResponseGenerator:
         compact_summary = ""
         pre_prompt_injection = ""
 
+        # Inyectar aprendizaje natural
+        if self.learning:
+            learning_injection = self.learning.get_prompt_injection()
+            if learning_injection:
+                pre_prompt_injection += learning_injection
+
         if Config.MELISSA_COMPACT_PROMPT:
             effective_history, compact_summary = self._prepare_effective_history(
                 chat_id=chat_id,
                 history=effective_history,
             )
             if chat_id:
-                pre_prompt_injection = v8_extended_pre_prompt_injection(
+                pre_prompt_injection += v8_extended_pre_prompt_injection(
                     chat_id=chat_id,
                     user_msg=message,
                     history=effective_history,
@@ -9944,84 +10020,77 @@ cliente: lo vi en redes y me llamó la atención
                                  chat_id: str, clinic: Dict, user_msg: str,
                                  history: List[Dict]) -> str:
         """
-        v10 — Retry limpio basado en contexto, no en instrucciones explícitas.
-        Solo activa si hay un problema real detectable. Un solo intento.
-        El retry le muestra al LLM qué salió mal en su propia respuesta
-        y le pide que la rehaga — sin decirle cómo tiene que sonar.
+        v10 — Retry limpio basado en contexto.
+        V9 Upgrade: Bloquea 'conversational apologies' (Uy, qué pena!).
         """
         current = response
-        archetype = getattr(personality, "archetype", "amigable")
         first_turn = not any((m.get("role") == "assistant") for m in (history or []))
         reentry_turn = self._looks_like_reentry_turn(user_msg, history)
+        greeting_only = self._is_greeting_only(user_msg)
 
-        # ── Detectar si realmente hay un problema ────────────────────────────
+        # ── EXCEPCIÓN: No hacer retry para saludos simples (evita over-correction)
+        if greeting_only and not first_turn:
+            return current
+
+        # ── Detectar problemas ──────────────────────────────────────────────
         conflicts, owner_block = self._build_owner_rule_retry_injection(current)
         redundant_question = detect_redundant_question(user_msg, current, history=history)
         unanswered_price = detect_unanswered_price_request(user_msg, current)
         fragmented = looks_fragmented_reply(current)
         current_lower = (current or "").lower().strip()
 
-        # Primer turno — solo conflicto real si es muy largo o muy genérico
-        if first_turn:
-            if len((current or "").split()) > 32:
-                conflicts.append("primer_turno_largo")
+        if first_turn and len((current or "").split()) > 35:
+            conflicts.append("primer_turno_largo")
 
-        # Saludo redundante en conversación en curso
         if not first_turn and not reentry_turn:
             if re.match(r"^(hola[,!]?\s|buenas[,!]?\s)", current_lower):
                 conflicts.append("saludo_redundante")
 
-        if redundant_question:
-            conflicts.append("pregunta_redundante")
-        if unanswered_price:
-            conflicts.append("precio_ignorado")
-        if fragmented:
-            conflicts.append("respuesta_cortada")
+        if redundant_question: conflicts.append("pregunta_redundante")
+        if unanswered_price:   conflicts.append("precio_ignorado")
+        if fragmented:         conflicts.append("respuesta_cortada")
 
-        # Sin problemas reales → devolver tal cual
         if not conflicts and not owner_block:
             return current
 
-        # ── Un solo retry — mostrar el problema, no la solución ─────────────
-        # Principio: el LLM sabe cómo habla una persona real.
-        # No le digas "habla así" — dile "esto que generaste tiene este problema"
-        # y confía en que lo corrija solo.
+        # ── Un solo retry — Formato 'Inner Monologue' ───────────────────────
         problem_parts = []
-
-        if "primer_turno_largo" in conflicts:
-            problem_parts.append("la respuesta es muy larga para un primer mensaje")
-        if "saludo_redundante" in conflicts:
-            problem_parts.append("ya vienen hablando — no hace falta volver a saludar")
-        if "pregunta_redundante" in conflicts:
-            problem_parts.append(f"ya preguntaste eso antes o la persona ya lo dijo")
-        if "precio_ignorado" in conflicts:
-            problem_parts.append("preguntaron por precio y no lo respondiste")
-        if "respuesta_cortada" in conflicts:
-            problem_parts.append("la respuesta quedó incompleta")
-        if owner_block:
-            problem_parts.append(owner_block.strip())
+        if "primer_turno_largo" in conflicts: problem_parts.append("demasiado largo para el primer mensaje")
+        if "saludo_redundante" in conflicts:   problem_parts.append("saludo innecesario (ya vienen hablando)")
+        if "pregunta_redundante" in conflicts: problem_parts.append("ya preguntaste eso antes")
+        if "precio_ignorado" in conflicts:     problem_parts.append("no respondiste al precio")
+        if "respuesta_cortada" in conflicts:   problem_parts.append("respuesta incompleta")
+        if owner_block:                        problem_parts.append(owner_block.strip())
 
         if not problem_parts:
             return current
 
-        retry_note = "tu respuesta anterior tiene un problema: " + " / ".join(problem_parts) + ". rehazla."
+        # Prompt de instrucción interna (System-style para no romper personaje)
+        retry_note = (
+            f"[INSTRUCCIÓN INTERNA DE CALIDAD: Tu respuesta anterior fue rechazada porque {', '.join(problem_parts)}. "
+            "Genera una nueva respuesta final para el paciente. NO te disculpes, NO menciones este error, "
+            "solo responde directamente al paciente manteniendo tu personaje.]"
+        )
 
         retry_messages = list(messages)
         retry_messages.append({"role": "assistant", "content": current})
-        retry_messages.append({"role": "user", "content": retry_note})
+        retry_messages.append({"role": "system", "content": retry_note})
 
         try:
+            # En retry usamos un modelo razonador si es posible para asegurar calidad
+            retry_tier = "reasoning" if model_tier == "fast" else model_tier
             current, _ = await self.llm.complete(
                 retry_messages,
-                model_tier="fast",
-                temperature=0.72,
-                max_tokens=280,
+                model_tier=retry_tier,
+                temperature=0.6, # un poco más conservador en el retry
+                max_tokens=300,
                 use_cache=False,
             )
         except Exception as e:
             log.warning(f"[human_retry] error en retry: {e}")
-            return response  # devolver original si falla
+            return response
 
+        # Limpieza final
         current = self._apply_output_pipeline(
             response=current,
             personality=personality,
@@ -10685,7 +10754,7 @@ def init_calendar():
 class WebSearchEngine:
     """
     Motor de busqueda. Si search.py esta disponible lo usa (SerpAPI -> Brave -> Apify).
-    Si no, usa implementacion interna de fallback solo con Brave/Apify.
+    V9 Upgrade: Soporte para rotación masiva de 20+ claves (estilo OpenClaw).
     """
 
     def __init__(self):
@@ -10695,10 +10764,21 @@ class WebSearchEngine:
         else:
             self._ext = None
             log.info("[search] search.py no encontrado, usando motor interno")
-        self.brave_key = Config.BRAVE_API_KEY
-        self.apify_key = Config.APIFY_API_KEY
-        self.apify_keys = Config.APIFY_API_KEYS or ([self.apify_key] if self.apify_key else [])
-        self.serp_key  = Config.SERP_API_KEY
+        
+        # Colección de llaves masiva
+        self.brave_keys = Config.BRAVE_API_KEYS or ([Config.BRAVE_API_KEY] if Config.BRAVE_API_KEY else [])
+        self.apify_keys = Config.APIFY_API_KEYS or ([Config.APIFY_API_KEY] if Config.APIFY_API_KEY else [])
+        self.serp_keys  = Config.SERP_API_KEYS  or ([Config.SERP_API_KEY]  if Config.SERP_API_KEY  else [])
+        
+        # Índices para rotación simple (Round Robin)
+        self._brave_idx = 0
+        self._apify_idx = 0
+        self._serp_idx  = 0
+
+    def _next_key(self, keys: List[str], current_idx: int) -> Tuple[str, int]:
+        if not keys: return "", 0
+        idx = current_idx % len(keys)
+        return keys[idx], idx + 1
 
     async def search(self, query: str, context: str = "") -> str:
         """Busqueda con contexto. Usa motor externo si disponible."""
@@ -10712,7 +10792,6 @@ class WebSearchEngine:
         """Busqueda medica especializada."""
         if self._ext:
             return await self._ext.medical(procedure, question, patient_age, clinic_services)
-        # Fallback: busqueda generica
         q = f"{procedure} tratamiento estetico beneficios edad Medellin {question}"
         return await self._fallback_search(q, "")
 
@@ -10727,85 +10806,86 @@ class WebSearchEngine:
         return None
 
     async def _fallback_search(self, query: str, context: str) -> str:
-        """Motor interno de fallback: SerpAPI directo -> Brave -> Apify."""
+        """Motor interno de fallback: Rotación de SerpAPI -> Brave -> Apify."""
         full_query = f"{context} {query}".strip() if context else query
 
-        # SerpAPI directo si hay key
-        if self.serp_key:
-            result = await self._serp_search(full_query)
-            if result:
-                return result
+        # 1. SerpAPI (si hay keys)
+        for _ in range(len(self.serp_keys)):
+            key, self._serp_idx = self._next_key(self.serp_keys, self._serp_idx)
+            result = await self._serp_search(full_query, key)
+            if result: return result
 
-        # Brave
-        if self.brave_key:
-            result = await self._brave_search(full_query)
-            if result:
-                return result
+        # 2. Brave (si hay keys)
+        for _ in range(len(self.brave_keys)):
+            key, self._brave_idx = self._next_key(self.brave_keys, self._brave_idx)
+            result = await self._brave_search(full_query, key)
+            if result: return result
 
-        # Apify
-        if self.apify_keys:
-            return await self._apify_search(full_query)
+        # 3. Apify (si hay keys)
+        for _ in range(len(self.apify_keys)):
+            key, self._apify_idx = self._next_key(self.apify_keys, self._apify_idx)
+            result = await self._apify_search(full_query, key)
+            if result: return result
 
         return ""
 
-    async def _serp_search(self, query: str) -> str:
+    async def _serp_search(self, query: str, key: str) -> str:
+        if not key: return ""
         try:
             async with httpx.AsyncClient(timeout=12.0) as client:
                 r = await client.get(
                     "https://serpapi.com/search",
-                    params={"engine": "google", "q": query, "api_key": self.serp_key,
+                    params={"engine": "google", "q": query, "api_key": key,
                             "hl": "es", "gl": "co", "num": 5, "safe": "active"},
                 )
+                if r.status_code == 429: return ""
                 r.raise_for_status()
                 data = r.json()
                 parts = []
                 ab = data.get("answer_box", {})
                 if ab:
                     s = ab.get("answer") or ab.get("snippet") or ""
-                    if s:
-                        parts.append(s.strip()[:600])
+                    if s: parts.append(s.strip()[:600])
                 for res in data.get("organic_results", [])[:4]:
-                    if res.get("snippet"):
-                        parts.append(res["snippet"][:300])
+                    if res.get("snippet"): parts.append(res["snippet"][:300])
                 return "\n".join(parts)[:1200]
-        except Exception as e:
-            log.warning(f"[serp_fallback] error: {e}")
+        except Exception:
             return ""
 
-    async def _brave_search(self, query: str, count: int = 5) -> str:
+    async def _brave_search(self, query: str, key: str, count: int = 5) -> str:
+        if not key: return ""
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 r = await client.get(
                     "https://api.search.brave.com/res/v1/web/search",
                     headers={"Accept": "application/json",
-                             "X-Subscription-Token": self.brave_key},
+                             "X-Subscription-Token": key},
                     params={"q": query, "count": count, "search_lang": "es", "country": "ALL"},
                 )
+                if r.status_code == 429: return ""
                 r.raise_for_status()
-                results = r.json().get("web", {}).get("results", [])
+                data = r.json()
+                results = data.get("web", {}).get("results", [])
                 snippets = [res.get("description", "") for res in results if res.get("description")]
                 return " ".join(snippets)[:1200]
-        except Exception as e:
-            log.warning(f"Brave search error: {e}")
+        except Exception:
             return ""
 
-    async def _apify_search(self, query: str) -> str:
-        if not self.apify_keys:
-            return ""
-        for apify_key in self.apify_keys:
-            try:
-                async with httpx.AsyncClient(timeout=25.0) as client:
-                    r = await client.post(
-                        "https://api.apify.com/v2/acts/apify~google-search-scraper/run-sync-get-dataset-items",
-                        headers={"Authorization": f"Bearer {apify_key}"},
-                        json={"queries": query, "maxPagesPerQuery": 1,
-                              "resultsPerPage": 5, "languageCode": "es", "countryCode": "co"},
-                        params={"timeout": 20, "memory": 256},
-                    )
-                    r.raise_for_status()
-                    items = r.json()
-                    if not items or not isinstance(items, list):
-                        continue
+    async def _apify_search(self, query: str, key: str) -> str:
+        if not key: return ""
+        try:
+            async with httpx.AsyncClient(timeout=25.0) as client:
+                r = await client.post(
+                    "https://api.apify.com/v2/acts/apify~google-search-scraper/run-sync-get-dataset-items",
+                    headers={"Authorization": f"Bearer {key}"},
+                    json={"queries": query, "maxPagesPerQuery": 1,
+                          "resultsPerPage": 5, "languageCode": "es", "countryCode": "co"},
+                    params={"timeout": 20, "memory": 256},
+                )
+                if r.status_code == 429: return ""
+                r.raise_for_status()
+                items = r.json()
+                if items and isinstance(items, list):
                     snippets = []
                     for item in items[:1]:
                         for res in item.get("organicResults", [])[:5]:
@@ -10813,10 +10893,8 @@ class WebSearchEngine:
                                 snippets.append(res["description"])
                     if snippets:
                         return " ".join(snippets)[:1200]
-            except Exception as e:
-                log.warning(f"Apify search error: {e}")
-                continue
-        return ""
+        except Exception:
+            return ""
 
     async def _apify_search_candidates(self, query: str, count: int = 5) -> List[Dict]:
         if not self.apify_keys:
@@ -11423,6 +11501,118 @@ class MCPManager:
                 results[pid] = False
         return results
 
+
+class TaskManager:
+    """Gestor de tareas autónomas."""
+
+    def __init__(self):
+        self._running = False
+        self._task_handlers: Dict[str, Callable] = {}
+        self._register_default_handlers()
+
+    def _register_default_handlers(self):
+        self._task_handlers["reminder"] = self._handle_reminder
+        self._task_handlers["self_improve"] = self._handle_self_improve
+        self._task_handlers["daily_report"] = self._handle_daily_report
+
+    async def start(self):
+        self._running = True
+        asyncio.create_task(self._run_loop())
+
+    async def _run_loop(self):
+        while self._running:
+            try:
+                if db:
+                    pending = db.get_pending_tasks(limit=5)
+                    for task_data in pending:
+                        task_type = task_data.get("type", "")
+                        handler = self._task_handlers.get(task_type)
+                        if handler:
+                            try:
+                                result = await handler(task_data)
+                                db.complete_task(task_data.get("id"), result)
+                            except Exception:
+                                db.fail_task(task_data.get("id"), str(Exception("handler failed")))
+            except Exception:
+                pass
+            await asyncio.sleep(30)
+
+    async def _handle_reminder(self, task: "Task") -> Dict:
+        from datetime import datetime, timedelta
+        try:
+            chat_id = task.data.get("chat_id", "")
+            message = task.data.get("message", "")
+            if chat_id and message:
+                await mcp_manager.execute(
+                    "notifications_v1", "send_notification",
+                    {"chat_id": chat_id, "message": message}
+                )
+            return {"status": "sent", "chat_id": chat_id}
+        except Exception as e:
+            log.warning(f"[task] reminder failed: {e}")
+            return {"status": "failed", "error": str(e)}
+
+    async def _handle_self_improve(self, task: "Task") -> Dict:
+        try:
+            from melissa_intelligence import _trigger_self_improve
+            await _trigger_self_improve()
+            return {"status": "ok"}
+        except Exception as e:
+            log.warning(f"[task] self_improve failed: {e}")
+            return {"status": "failed"}
+
+    async def _handle_daily_report(self, task: "Task") -> Dict:
+        try:
+            await self._send_daily_report()
+            return {"status": "ok"}
+        except Exception as e:
+            log.warning(f"[task] daily_report failed: {e}")
+            return {"status": "failed"}
+
+    async def _send_daily_report(self):
+        try:
+            from datetime import datetime
+            if db:
+                admin_ids = _parse_admin_ids(db.get_clinic().get("admin_chat_ids", []))
+                today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+                stats = db.get_conversation_stats(since=today_start)
+                msg = f"*Reporte diario Melissa*\n\nConversaciones: {stats.get('conversations', 0)}\nMensajes: {stats.get('messages', 0)}"
+                for aid in admin_ids:
+                    await mcp_manager.execute("notifications_v1", "send_notification", {"chat_id": aid, "message": msg})
+        except Exception:
+            pass
+
+    def schedule_task(self, task_type: str, data: Dict,
+                      scheduled_for: "datetime" = None, priority: int = 5):
+        task_obj = Task(
+            id=str(uuid.uuid4()),
+            type=task_type,
+            priority=priority,
+            status="pending",
+            data=data,
+            created_at=datetime.now(),
+            scheduled_for=scheduled_for,
+            completed_at=None,
+            result=None,
+            retries=0
+        )
+        if db:
+            db.create_task(task_obj)
+        return task_obj.id
+
+    def cancel_task(self, task_id: str):
+        if db:
+            db.cancel_task(task_id)
+
+
+task_manager: TaskManager = None
+
+async def init_task_manager():
+    global task_manager
+    task_manager = TaskManager()
+    await task_manager.start()
+
+
 # Instancia global
 mcp_manager: MCPManager = None
 
@@ -11435,1094 +11625,13 @@ async def init_mcp():
 # SISTEMA DE AUTO-MEJORA
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class SelfImprovementEngine:
-    """Motor de auto-mejora autónoma."""
-    
-    def __init__(self, llm: LLMEngine):
-        self.llm = llm
-        self._last_analysis = None
-        self._improvement_queue = []
-    
-    async def analyze_performance(self) -> Dict:
-        """Analiza rendimiento y sugiere mejoras."""
-        
-        # Obtener métricas recientes
-        now = datetime.now()
-        since = now - timedelta(hours=24)
-        
-        metrics = db.get_metrics(since=since)
-        
-        # Obtener conversaciones para análisis
-        conversations = self._get_recent_conversations()
-        
-        # Calcular métricas clave
-        analysis = {
-            "period": f"{since.isoformat()} - {now.isoformat()}",
-            "total_conversations": len(conversations),
-            "avg_response_time_ms": self._calc_avg_metric(metrics, "latency_ms"),
-            "avg_turns_per_conversation": self._calc_avg_turns(conversations),
-            "intent_distribution": self._calc_intent_distribution(conversations),
-            "sentiment_distribution": self._calc_sentiment_distribution(conversations),
-            "escalation_rate": self._calc_escalation_rate(conversations),
-            "conversion_rate": self._calc_conversion_rate(conversations),
-        }
-        
-        # Generar sugerencias de mejora
-        suggestions = await self._generate_improvement_suggestions(analysis, conversations)
-        
-        analysis["suggestions"] = suggestions
-        self._last_analysis = analysis
-        
-        return analysis
-    
-    async def apply_improvements(self, auto_apply: bool = False) -> List[Dict]:
-        """Aplica mejoras aprobadas."""
-        applied = []
-        
-        for suggestion in self._improvement_queue:
-            if suggestion.get("auto_apply") or auto_apply:
-                try:
-                    result = await self._apply_improvement(suggestion)
-                    applied.append({
-                        "suggestion": suggestion,
-                        "result": result,
-                        "success": True
-                    })
-                    
-                    # Registrar
-                    db.log_improvement(
-                        improvement_type=suggestion.get("type", "general"),
-                        description=suggestion.get("description", ""),
-                        before=suggestion.get("before", {}),
-                        after=suggestion.get("after", {}),
-                        impact=suggestion.get("expected_impact", 0),
-                        applied=True
-                    )
-                except Exception as e:
-                    applied.append({
-                        "suggestion": suggestion,
-                        "error": str(e),
-                        "success": False
-                    })
-        
-        self._improvement_queue = [
-            s for s in self._improvement_queue 
-            if s not in [a["suggestion"] for a in applied if a["success"]]
-        ]
-        
-        return applied
-    
-    def _get_recent_conversations(self) -> List[Dict]:
-        """Obtiene conversaciones recientes para análisis."""
-        # Agrupar por chat_id
-        with db._conn() as c:
-            rows = c.execute("""
-                SELECT chat_id, role, content, analysis, ts
-                FROM conversations
-                WHERE ts > datetime('now', '-24 hours')
-                ORDER BY chat_id, ts
-            """).fetchall()
-        
-        conversations = defaultdict(list)
-        for r in rows:
-            conversations[r["chat_id"]].append({
-                "role": r["role"],
-                "content": r["content"],
-                "analysis": json.loads(r["analysis"] or "{}"),
-                "ts": r["ts"]
-            })
-        
-        return list(conversations.values())
-    
-    def _calc_avg_metric(self, metrics: List[Dict], name: str) -> float:
-        values = [m["metric_value"] for m in metrics if m.get("metric_name") == name]
-        return sum(values) / len(values) if values else 0
-    
-    def _calc_avg_turns(self, conversations: List[List[Dict]]) -> float:
-        if not conversations:
-            return 0
-        turns = [len(c) for c in conversations]
-        return sum(turns) / len(turns)
-    
-    def _calc_intent_distribution(self, conversations: List[List[Dict]]) -> Dict[str, int]:
-        dist = defaultdict(int)
-        for conv in conversations:
-            for msg in conv:
-                intent = msg.get("analysis", {}).get("intent")
-                if intent:
-                    dist[intent] += 1
-        return dict(dist)
-    
-    def _calc_sentiment_distribution(self, conversations: List[List[Dict]]) -> Dict[str, int]:
-        dist = defaultdict(int)
-        for conv in conversations:
-            for msg in conv:
-                if msg.get("role") == "user":
-                    sentiment = msg.get("analysis", {}).get("sentiment", "neutral")
-                    dist[sentiment] += 1
-        return dict(dist)
-    
-    def _calc_escalation_rate(self, conversations: List[List[Dict]]) -> float:
-        if not conversations:
-            return 0
-        escalated = sum(1 for c in conversations if any(
-            "escalation" in str(m.get("analysis", {})).lower() for m in c
-        ))
-        return escalated / len(conversations)
-    
-    def _calc_conversion_rate(self, conversations: List[List[Dict]]) -> float:
-        """Tasa de conversación a cita."""
-        if not conversations:
-            return 0
-        
-        # Contar citas agendadas
-        appointments = db.get_appointments()
-        apt_chats = {a["chat_id"] for a in appointments}
-        
-        converted = sum(1 for c in conversations if c and c[0].get("chat_id") in apt_chats)
-        return converted / len(conversations) if conversations else 0
-    
-    async def _generate_improvement_suggestions(self, 
-                                                analysis: Dict,
-                                                conversations: List) -> List[Dict]:
-        """Genera sugerencias de mejora usando LLM."""
-        
-        prompt = f"""Analiza estas métricas de rendimiento de una recepcionista virtual y sugiere mejoras concretas:
-
-MÉTRICAS:
-- Total conversaciones: {analysis.get('total_conversations', 0)}
-- Tiempo promedio respuesta: {analysis.get('avg_response_time_ms', 0):.0f}ms
-- Turnos promedio por conversación: {analysis.get('avg_turns_per_conversation', 0):.1f}
-- Tasa de escalación: {analysis.get('escalation_rate', 0)*100:.1f}%
-- Tasa de conversión (citas agendadas): {analysis.get('conversion_rate', 0)*100:.1f}%
-
-DISTRIBUCIÓN DE INTENCIONES:
-{json.dumps(analysis.get('intent_distribution', {}), indent=2)}
-
-DISTRIBUCIÓN DE SENTIMIENTO:
-{json.dumps(analysis.get('sentiment_distribution', {}), indent=2)}
-
-Genera 3-5 sugerencias de mejora en formato JSON:
-[
-  {{
-    "type": "prompt|personality|flow|response",
-    "description": "descripcion de la mejora",
-    "expected_impact": 0.0,
-    "auto_apply": false,
-    "changes": {{}}
-  }}
-]"""
-        
-        try:
-            response, _ = await self.llm.complete(
-                [{"role": "system", "content": prompt}],
-                model_tier="reasoning",
-                temperature=0.3
-            )
-            
-            # Parsear JSON
-            json_match = re.search(r'```json\s*(.*?)\s*```', response, re.DOTALL)
-            if json_match:
-                suggestions = json.loads(json_match.group(1))
-                self._improvement_queue.extend(suggestions)
-                return suggestions
-        except Exception as e:
-            log.warning(f"Error generando sugerencias: {e}")
-        
-        return []
-    
-    async def _apply_improvement(self, suggestion: Dict) -> Dict:
-        """Aplica una mejora sugerida."""
-        improvement_type = suggestion.get("type")
-        changes = suggestion.get("changes", {})
-        
-        if improvement_type == "personality":
-            # Actualizar configuración de personalidad
-            clinic = db.get_clinic()
-            persona = clinic.get("persona_config", {})
-            if isinstance(persona, str):
-                persona = json.loads(persona)
-            persona.update(changes)
-            db.update_clinic(persona_config=persona)
-            return {"updated": "persona_config"}
-        
-        elif improvement_type == "response":
-            # Guardar como optimización aprendida
-            db.save_optimization(
-                category="response",
-                trigger=changes.get("trigger", "general"),
-                optimization=json.dumps(changes, ensure_ascii=False),
-                success_rate=suggestion.get("expected_impact", 0.5)
-            )
-            return {"saved": "optimization"}
-        
-        return {"applied": improvement_type}
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# GESTOR DE TAREAS AUTÓNOMAS
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class TaskManager:
-    """Gestor de tareas autónomas."""
-    
-    def __init__(self):
-        self._running = False
-        self._task_handlers: Dict[str, Callable] = {}
-        self._register_default_handlers()
-    
-    def _register_default_handlers(self):
-        """Registra handlers por defecto."""
-        self._task_handlers["reminder"] = self._handle_reminder
-        self._task_handlers["follow_up"] = self._handle_follow_up
-        self._task_handlers["report"] = self._handle_report
-        self._task_handlers["cleanup"] = self._handle_cleanup
-        self._task_handlers["self_improve"] = self._handle_self_improve
-    
-    async def start(self):
-        """Inicia el procesador de tareas."""
-        self._running = True
-        asyncio.create_task(self._process_loop())
-        log.info("TaskManager iniciado")
-    
-    async def stop(self):
-        """Detiene el procesador."""
-        self._running = False
-    
-    async def _process_loop(self):
-        """Loop principal de procesamiento."""
-        while self._running:
-            try:
-                tasks = db.get_pending_tasks(limit=10)
-                
-                for task in tasks:
-                    if task.status == "pending":
-                        await self._execute_task(task)
-                
-            except Exception as e:
-                log.error(f"TaskManager error: {e}")
-            
-            await asyncio.sleep(30)  # Check cada 30 segundos
-    
-    async def _execute_task(self, task: Task):
-        """Ejecuta una tarea."""
-        handler = self._task_handlers.get(task.type)
-        
-        if not handler:
-            log.warning(f"No handler for task type: {task.type}")
-            db.update_task(task.id, status="failed", error="No handler")
-            return
-        
-        try:
-            db.update_task(task.id, status="running", started_at=datetime.now())
-            
-            result = await handler(task)
-            
-            db.update_task(
-                task.id,
-                status="completed",
-                completed_at=datetime.now(),
-                result=result
-            )
-            
-        except Exception as e:
-            log.error(f"Task {task.id} failed: {e}")
-            
-            if task.retries < 3:
-                db.update_task(
-                    task.id,
-                    status="pending",
-                    retries=task.retries + 1,
-                    error=str(e)
-                )
-            else:
-                db.update_task(task.id, status="failed", error=str(e))
-    
-    async def _handle_reminder(self, task: Task) -> Dict:
-        """Maneja recordatorios."""
-        data = task.data
-        chat_id = data.get("chat_id")
-        message = data.get("message")
-        
-        if chat_id and message:
-            await mcp_manager.execute(
-                "notifications_v1",
-                "send_notification",
-                {"chat_id": chat_id, "message": message}
-            )
-        
-        return {"sent": True}
-    
-    async def _handle_follow_up(self, task: Task) -> Dict:
-        """
-        Follow-up automático a leads fríos o abandonados.
-        Tipos: cold_lead (48h sin respuesta), abandoned (dejó de responder a mitad),
-               reactivation (inactivo 60+ días), appointment_reminder (recordatorio de cita).
-        """
-        data       = task.data
-        chat_id    = data.get("chat_id", "")
-        reason     = data.get("reason", "cold_lead")
-        last_msg   = data.get("last_message", "")
-        patient_name = (data.get("patient_name") or "").strip()
-
-        if not chat_id or not melissa:
-            return {"error": "no melissa instance"}
-
-        # FIX CRÍTICO: nunca mandar follow-up a sesiones demo
-        # Las sesiones demo crean conversaciones en SQLite y el TaskManager
-        # las recogía como pacientes reales → spam a dueños de negocios en demo
-        if Config.DEMO_MODE:
-            return {"skipped": "demo_mode_active"}
-
-        # Generar el mensaje de follow-up con LLM
-        clinic   = db.get_clinic()
-        biz_name = clinic.get("name", "el negocio")
-
-        # Solo usar nombre si es un nombre real (no vacío, no número de teléfono)
-        _use_name = (
-            patient_name and
-            len(patient_name) > 1 and
-            not patient_name.replace("+","").replace(" ","").isdigit()
-        )
-        name_part = f", {patient_name}" if _use_name else ""
-
-        reason_prompts = {
-            "cold_lead": f"""Eres Melissa de {biz_name}. Un cliente escribió hace más de 48h
-y no volvió. Su último mensaje fue: "{last_msg[:200]}"
-Escribe UN mensaje de seguimiento natural para retomarlo.
-Muy corto (1 oración), sin presionar.
-{"Usa el nombre: " + patient_name if _use_name else "NO uses placeholder [nombre] — escribe sin nombre."}
-Ejemplo SIN nombre: "oye, sigues pensándolo"
-Ejemplo CON nombre: "oye {patient_name}, sigues por ahí"
-NUNCA escribas [nombre], [paciente], [cliente] ni ningún placeholder entre corchetes.
-Sin punto al final. Sin emojis.""",
-
-            "abandoned": f"""Eres Melissa de {biz_name}. Un cliente dejó de responder.
-Su última interacción: "{last_msg[:200]}"
-UN mensaje ultra corto para retomarlo. Sin presionar.
-NUNCA escribas [nombre] ni placeholders entre corchetes.
-Ejemplo: "sigues ahí?" o "oye, ¿se fue el internet?"
-Sin punto al final.""",
-
-            "reactivation": f"""Eres Melissa de {biz_name}. Un cliente que no ha escrito en 60+ días.
-Su historial incluye: "{last_msg[:200]}"
-UN mensaje para reactivarlo.
-{"Nombre disponible: " + patient_name if _use_name else "No tienes su nombre — NO uses placeholder [nombre]."}
-Ejemplo: "hola{name_part}, ¿al final te decidiste?"
-NUNCA escribas [nombre] ni placeholders entre corchetes.
-Sin punto al final. Natural.""",
-
-            "appointment_reminder": f"""Eres Melissa de {biz_name}. Recordatorio de cita.
-Info: {last_msg[:200]}
-{"Nombre: " + patient_name if _use_name else "No tienes nombre — NO uses placeholder."}
-UN mensaje corto y amigable.
-NUNCA escribas [nombre] ni placeholders entre corchetes.
-Sin punto al final.""",
-        }
-
-        sys_p = reason_prompts.get(reason, reason_prompts["cold_lead"])
-
-        try:
-            msgs = [{"role": "system", "content": sys_p},
-                    {"role": "user", "content": "genera el mensaje"}]
-            reply, _ = await asyncio.wait_for(
-                llm_engine.complete(msgs, model_tier="fast", temperature=0.75, max_tokens=80),
-                timeout=10.0
-            )
-            reply = reply.strip().strip('"')
-
-            # FIX CRÍTICO: detectar y rechazar placeholders no resueltos
-            import re as _re_fu
-            _placeholder_pattern = _re_fu.compile(r'\[[\w\s]+\]')
-            if not reply or _placeholder_pattern.search(reply):
-                raise ValueError(f"placeholder o vacío: '{reply[:40]}'")
-
-        except Exception as _e:
-            log.warning(f"[follow_up] LLM falló ({_e}), usando fallback seguro")
-            # Fallbacks 100% seguros — sin placeholders, sin nombres inventados
-            fallbacks = {
-                "cold_lead":    "oye, sigues pensándolo",
-                "abandoned":    "sigues ahí?",
-                "reactivation": f"hola{name_part}, cómo vas",
-                "appointment_reminder": f"hola{name_part}, te recuerdo tu cita mañana",
-            }
-            reply = fallbacks.get(reason, "hola, cómo te va")
-
-        # Enviar el mensaje
-        try:
-            await melissa._send_message(chat_id, reply)
-            log.info(f"[follow_up] enviado a {chat_id} razón={reason} msg='{reply[:50]}'")
-            return {"sent": True, "message": reply, "reason": reason}
-        except Exception as e:
-            log.error(f"[follow_up] error enviando: {e}")
-            return {"error": str(e)}
-    
-    async def _handle_report(self, task: Task) -> Dict:
-        """
-        Genera y envía el reporte diario/semanal al admin por Telegram.
-        Se programa automáticamente a las 8am cada día.
-        """
-        data        = task.data
-        report_type = data.get("type", "daily")
-        admin_ids   = []
-
-        try:
-            clinic   = db.get_clinic()
-            biz_name = clinic.get("name", "el negocio")
-            admin_ids = _parse_admin_ids(clinic.get("admin_chat_ids", []))
-
-            # Obtener métricas del período
-            days = 1 if report_type == "daily" else 7
-            with db._conn() as c:
-                # Conversaciones
-                convs = c.execute(
-                    "SELECT COUNT(DISTINCT chat_id) FROM conversations "
-                    "WHERE created_at >= datetime('now', ?)", (f"-{days} days",)
-                ).fetchone()[0] or 0
-
-                # Citas agendadas
-                apts = c.execute(
-                    "SELECT COUNT(*) FROM appointments "
-                    "WHERE created_at >= datetime('now', ?)", (f"-{days} days",)
-                ).fetchone()[0] or 0
-
-                # Nuevos pacientes
-                new_patients = c.execute(
-                    "SELECT COUNT(*) FROM patients "
-                    "WHERE created_at >= datetime('now', ?)", (f"-{days} days",)
-                ).fetchone()[0] or 0
-
-                # Mensaje más común
-                top_intent = c.execute(
-                    "SELECT intent, COUNT(*) as cnt FROM conversations "
-                    "WHERE created_at >= datetime('now', ?) AND intent IS NOT NULL "
-                    "GROUP BY intent ORDER BY cnt DESC LIMIT 1", (f"-{days} days",)
-                ).fetchone()
-
-            period = "ayer" if report_type == "daily" else "esta semana"
-            icon   = "📊"
-
-            lines = [
-                f"{icon} Reporte {period} — {biz_name}",
-                "",
-                f"Conversaciones: {convs}",
-                f"Citas agendadas: {apts}",
-                f"Clientes nuevos: {new_patients}",
-            ]
-
-            if top_intent:
-                intent_labels = {
-                    "appointment_request": "Agendar cita",
-                    "price_inquiry": "Preguntar precios",
-                    "service_info": "Info de servicios",
-                    "greeting": "Saludos",
-                }
-                lines.append(f"Consulta más frecuente: {intent_labels.get(top_intent[0], top_intent[0])}")
-
-            if apts > 0 and convs > 0:
-                rate = round(apts / convs * 100)
-                lines.append(f"Tasa de conversión: {rate}%")
-
-            msg = "\n".join(lines)
-
-            for admin_id in admin_ids:
-                try:
-                    await melissa._send_message(admin_id, msg)
-                except Exception:
-                    pass
-
-            log.info(f"[report] {report_type} enviado a {len(admin_ids)} admins")
-            return {"sent": True, "type": report_type, "admins": len(admin_ids)}
-
-        except Exception as e:
-            log.error(f"[report] error: {e}")
-            return {"error": str(e)}
-    
-    async def _handle_cleanup(self, task: Task) -> Dict:
-        """Limpieza de datos antiguos."""
-        with db._conn() as c:
-            # Limpiar caché expirado
-            c.execute("""
-                DELETE FROM response_cache 
-                WHERE datetime(created_at, '+' || ttl_seconds || ' seconds') < datetime('now')
-            """)
-            
-            # Limpiar métricas antiguas (más de 30 días)
-            c.execute("""
-                DELETE FROM metrics 
-                WHERE ts < datetime('now', '-30 days')
-            """)
-        
-        return {"cleaned": True}
-    
-    async def _handle_self_improve(self, task: Task) -> Dict:
-        """Ejecuta auto-mejora."""
-        engine = SelfImprovementEngine(llm_engine)
-        analysis = await engine.analyze_performance()
-        applied = await engine.apply_improvements(auto_apply=True)
-        
-        return {"analysis": analysis, "applied": len(applied)}
-    
-    def schedule_task(self, task_type: str, data: Dict, 
-                     scheduled_for: datetime = None, priority: int = 5):
-        """Programa una tarea."""
-        task = Task(
-            id=str(uuid.uuid4()),
-            type=task_type,
-            priority=priority,
-            status="pending",
-            data=data,
-            created_at=datetime.now(),
-            scheduled_for=scheduled_for,
-            completed_at=None,
-            result=None,
-            retries=0
-        )
-        
-        db.create_task(task)
-        return task.id
-
-# Instancia global
-task_manager: TaskManager = None
-
-async def init_task_manager():
-    global task_manager
-    task_manager = TaskManager()
-    await task_manager.start()
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# MOTOR DE AUTENTICACION Y ACTIVACION MULTI-ADMIN
-# ═══════════════════════════════════════════════════════════════════════════════
-#
-# Flujo completo:
-#
-#  Santiago crea token -> envía a clínica
-#  -> Doctor escribe token en Telegram
-#  -> Melissa detecta formato ACTV-*
-#  -> Pide email y contraseña (flujo guiado)
-#  -> Registra como owner
-#  -> N8N notifica a Santiago
-#  -> Owner puede invitar más admins con /addadmin
-#
-# ───────────────────────────────────────────────────────────────────────────────
-
-import hashlib
-import secrets
-
-# Formato del token de activacion: ACTV-[8 chars clinic id]-[24 chars random]
-# Ejemplo: ACTV-A3F9B2C1-X7KM2PQRN4TVWZ8LHJE6YC9D
-# Imposible de adivinar. Facil de reconocer.
-ACTIVATION_PREFIX = "ACTV-"
-
-# Token de invitacion de admin: JINV-[16 chars]
-INVITE_PREFIX = "JINV-"
-
-
-def generate_activation_token(clinic_label: str = "") -> str:
-    """
-    Genera un token de activacion unico.
-    Santiago lo crea via API y lo manda a la clinica.
-    """
-    clinic_part = secrets.token_hex(4).upper()   # 8 chars
-    random_part = secrets.token_urlsafe(18).upper().replace("-", "").replace("_", "")[:24]
-    return f"{ACTIVATION_PREFIX}{clinic_part}-{random_part}"
-
-
-def generate_invite_token() -> str:
-    """Token para que un admin invite a otro miembro del equipo."""
-    return f"{INVITE_PREFIX}{secrets.token_urlsafe(12).upper()}"
-
-
-def hash_password(password: str) -> str:
-    """Hash de contrasena con PBKDF2 + salt."""
-    salt = secrets.token_hex(16)
-    key = hashlib.pbkdf2_hmac(
-        "sha256",
-        password.encode("utf-8"),
-        salt.encode("utf-8"),
-        260_000
-    ).hex()
-    return f"{salt}:{key}"
-
-
-def verify_password(password: str, stored_hash: str) -> bool:
-    """Verifica contrasena contra hash almacenado."""
-    try:
-        salt, key = stored_hash.split(":", 1)
-        test = hashlib.pbkdf2_hmac(
-            "sha256",
-            password.encode("utf-8"),
-            salt.encode("utf-8"),
-            260_000
-        ).hex()
-        return secrets.compare_digest(test, key)
-    except Exception:
-        return False
-
-
-def is_activation_token(text: str) -> bool:
-    """Detecta si el mensaje es un token de activacion."""
-    t = text.strip().upper()
-    return t.startswith(ACTIVATION_PREFIX) and len(t) >= 30
-
-
-def is_invite_token(text: str) -> bool:
-    """Detecta si el mensaje es un token de invitacion."""
-    t = text.strip().upper()
-    return t.startswith(INVITE_PREFIX) and len(t) >= 15
-
-
-class AuthEngine:
-    """
-    Maneja toda la logica de autenticacion y activacion.
-    Es completamente asincrono y guarda estado en DB.
-    """
-
-    MAX_LOGIN_ATTEMPTS = 5
-
-    def __init__(self):
-        pass
-
-    # ─── Deteccion ───────────────────────────────────────────────────────────
-
-    def is_auth_message(self, chat_id: str, text: str) -> bool:
-        """
-        Retorna True si el mensaje debe ser procesado por AuthEngine.
-
-        SEGURIDAD:
-        - Un paciente que manda texto random nunca se intercepta.
-        - Solo se intercepta si hay un token REAL en DB, o un flujo activo.
-        - Un paciente que pega accidentalmente "ACTV-XXXX" que no existe
-          cae al flujo normal de paciente sin ninguna diferencia visible.
-        """
-        t = text.strip()
-
-        # Prioridad 1: flujo de auth ya iniciado para este chat_id
-        # (el paciente ya paso el check inicial, espera email/password/etc.)
-        session = db.get_auth_session(chat_id)
-        if session and session.get("flow") in ("activate", "login", "invite", "register"):
-            return True
-
-        # Prioridad 2: token de activacion — SOLO si existe en DB y no expiro
-        # Esto evita que un paciente que manda texto con formato ACTV-* sea interceptado
-        if is_activation_token(t):
-            token_data = db.get_activation_token(t.upper())
-            return token_data is not None  # Solo True si el token es real
-
-        # Prioridad 3: token de invitacion — SOLO si la sesion de invitacion existe
-        if is_invite_token(t):
-            invite = db.get_auth_session(f"invite:{t.upper()}")
-            return invite is not None and invite.get("flow") == "invite_pending"
-
-        # Prioridad 4: admin activo usando comando slash o logout
-        admin = db.get_admin(chat_id)
-        if admin:
-            cmd = t.lower()
-            if cmd.startswith("/") or cmd in ("logout", "salir"):
-                return True
-
-        return False
-
-    def is_admin(self, chat_id: str) -> bool:
-        """Verifica si el chat_id es un admin activo."""
-        return db.get_admin(chat_id) is not None
-
-    # ─── Procesamiento principal ─────────────────────────────────────────────
-
-    async def process(self, chat_id: str, text: str) -> List[str]:
-        """
-        Punto de entrada para mensajes de auth.
-        Retorna lista de burbujas a enviar.
-        """
-        text = text.strip()
-
-        # ── Token de activacion recibido ──────────────────────────────────────
-        if is_activation_token(text):
-            return await self._start_activation(chat_id, text)
-
-        # ── Token de invitacion recibido ──────────────────────────────────────
-        if is_invite_token(text):
-            return await self._start_invite_registration(chat_id, text)
-
-        # ── Flujo de auth en progreso ─────────────────────────────────────────
-        session = db.get_auth_session(chat_id)
-        if session:
-            flow = session.get("flow", "")
-            step = session.get("step", "")
-
-            if flow == "activate":
-                return await self._handle_activation_flow(chat_id, text, session)
-            elif flow == "invite":
-                return await self._handle_invite_flow(chat_id, text, session)
-            elif flow == "login":
-                return await self._handle_login_flow(chat_id, text, session)
-
-        # ── Admin autenticado — comandos ──────────────────────────────────────
-        if self.is_admin(chat_id):
-            cmd = text.lower().strip()
-            if cmd == "logout" or cmd == "salir":
-                return self._logout(chat_id)
-
-        return []
-
-    # ─── Activacion ──────────────────────────────────────────────────────────
-
-    async def _start_activation(self, chat_id: str, token_raw: str) -> List[str]:
-        """El doctor acaba de enviar el token de activacion."""
-        token = token_raw.strip().upper()
-
-        # Verificar que el token existe y es valido
-        token_data = db.get_activation_token(token)
-        if not token_data:
-            return [
-                "Este codigo no es valido o ya expiro.",
-                "Si crees que es un error, pide a tu proveedor que genere uno nuevo."
-            ]
-
-        # Si ya hay un owner registrado, no puede activarse de nuevo sin /setup
-        existing_owner = db.get_owner()
-        if existing_owner:
-            return [
-                "Esta instancia ya tiene un administrador configurado.",
-                "Si eres parte del equipo, pide al owner que te invite con /addadmin."
-            ]
-
-        # Iniciar flujo de registro
-        db.set_auth_session(chat_id, flow="activate", step="name", temp_data={
-            "token": token,
-            "clinic_label": token_data.get("clinic_label", "")
-        })
-
-        clinic_label = token_data.get("clinic_label", "")
-        label_line = f" para {clinic_label}" if clinic_label else ""
-
-        return [
-            f"Codigo valido{label_line}. Vamos a crear tu cuenta de administrador.",
-            "Como te llamas?"
-        ]
-
-    async def _handle_activation_flow(self, chat_id: str, text: str,
-                                      session: Dict) -> List[str]:
-        """Pasos del flujo de activacion: nombre -> email -> password -> confirmar."""
-        step     = session["step"]
-        tmp      = session.get("temp_data", {})
-        attempts = session.get("attempts", 0)
-
-        if step == "name":
-            tmp["name"] = text.strip().title()
-            db.set_auth_session(chat_id, "activate", "email", tmp)
-            return [
-                f"Hola {tmp['name']}. Ahora necesito tu correo electronico."
-            ]
-
-        elif step == "email":
-            email = text.strip().lower()
-            if "@" not in email or "." not in email.split("@")[-1]:
-                return ["Ese correo no parece valido. Escribe tu email correcto."]
-
-            # Verificar que no este registrado ya
-            existing = db.get_admin_by_email(email)
-            if existing:
-                return [
-                    "Ese correo ya esta registrado.",
-                    "Si olvidaste tu contrasena, contacta a tu proveedor."
-                ]
-
-            tmp["email"] = email
-            db.set_auth_session(chat_id, "activate", "password", tmp)
-            return [
-                "Crea una contrasena segura.",
-                "Minimo 8 caracteres. Solo tu la sabras."
-            ]
-
-        elif step == "password":
-            pwd = text.strip()
-            if len(pwd) < 8:
-                return ["La contrasena debe tener minimo 8 caracteres. Intenta de nuevo."]
-
-            tmp["password_hash"] = hash_password(pwd)
-            db.set_auth_session(chat_id, "activate", "confirm", tmp)
-            return [
-                f"Perfecto. Resumen de tu cuenta:\n"
-                f"  Nombre: {tmp['name']}\n"
-                f"  Email: {tmp['email']}\n"
-                f"  Rol: Administrador principal (owner)\n\n"
-                f"Confirmas? (si / no)"
-            ]
-
-        elif step == "confirm":
-            if text.lower().strip() in ("si", "sip", "sep", "dale", "ok", "claro", "yes"):
-                return await self._finalize_activation(chat_id, tmp)
-            else:
-                db.clear_auth_session(chat_id)
-                return ["Registro cancelado. Cuando quieras empezar de nuevo, envia el codigo de activacion."]
-
-        db.clear_auth_session(chat_id)
-        return ["Algo fallo en el registro. Envia el codigo de activacion de nuevo."]
-
-    async def _finalize_activation(self, chat_id: str, tmp: Dict) -> List[str]:
-        """Completa el registro del owner y lanza N8N webhook."""
-        token   = tmp.get("token", "")
-        success = db.create_admin(
-            chat_id=chat_id,
-            email=tmp["email"],
-            password_hash=tmp["password_hash"],
-            name=tmp["name"],
-            role="owner",
-            token=token
-        )
-
-        if not success:
-            return ["No pude crear la cuenta. Intenta de nuevo enviando el codigo."]
-
-        # Marcar token como usado
-        db.consume_activation_token(token, chat_id)
-        db.clear_auth_session(chat_id)
-
-        # Registrar como admin en clinic (retrocompatibilidad)
-        clinic = db.get_clinic()
-        admin_ids = _parse_admin_ids(clinic.get("admin_chat_ids", []))
-        if chat_id not in admin_ids:
-            admin_ids.append(chat_id)
-            db.update_clinic(admin_chat_ids=admin_ids)
-
-        # Si clinic no tiene setup, iniciarlo
-        if not clinic.get("setup_done"):
-            db.update_clinic(setup_step="name")
-
-        # Notificar N8N
-        asyncio.create_task(self._notify_n8n("admin_activated", {
-            "chat_id": chat_id,
-            "name": tmp["name"],
-            "email": tmp["email"],
-            "clinic_label": tmp.get("clinic_label", ""),
-            "token": token,
-        }))
-
-        name = tmp["name"]
-        return [
-            f"Listo {name}, tu cuenta quedo creada.",
-            "Ahora vamos a configurar tu clinica. Como se llama tu negocio?"
-        ]
-
-    # ─── Invitacion de nuevos admins ─────────────────────────────────────────
-
-    async def create_invite(self, inviter_chat_id: str) -> List[str]:
-        """El owner genera un token de invitacion para un nuevo admin."""
-        inviter = db.get_admin(inviter_chat_id)
-        if not inviter or inviter.get("role") not in ("owner", "admin"):
-            return ["Solo los administradores pueden invitar a nuevos miembros."]
-
-        token = generate_invite_token()
-
-        # Guardar la invitacion como auth_session especial con el token como clave
-        db.set_auth_session(
-            f"invite:{token}",
-            flow="invite_pending",
-            step="waiting",
-            temp_data={"invited_by": inviter_chat_id, "inviter_name": inviter.get("name", "")}
-        )
-
-        return [
-            f"Token de invitacion creado:",
-            f"{token}",
-            "Enviaselo a la persona que quieres agregar como administrador. Expira en 24 horas."
-        ]
-
-    async def _start_invite_registration(self, chat_id: str, token_raw: str) -> List[str]:
-        """Un nuevo miembro recibio un token de invitacion."""
-        token = token_raw.strip().upper()
-
-        # Verificar que la invitacion existe
-        invite_session = db.get_auth_session(f"invite:{token}")
-        if not invite_session or invite_session.get("flow") != "invite_pending":
-            return [
-                "Este token de invitacion no es valido o ya fue usado.",
-                "Pide al administrador que genere uno nuevo."
-            ]
-
-        # Si el chat_id ya es admin, notificar
-        if db.get_admin(chat_id):
-            return ["Tu cuenta ya esta activa. No necesitas este token."]
-
-        invited_by = invite_session.get("temp_data", {}).get("invited_by", "")
-        inviter_name = invite_session.get("temp_data", {}).get("inviter_name", "")
-
-        # Iniciar registro
-        db.set_auth_session(chat_id, flow="invite", step="name", temp_data={
-            "invite_token": token,
-            "invited_by": invited_by
-        })
-
-        by_line = f" te invito {inviter_name}" if inviter_name else ""
-
-        return [
-            f"Token valido.{by_line} Vamos a crear tu cuenta.",
-            "Como te llamas?"
-        ]
-
-    async def _handle_invite_flow(self, chat_id: str, text: str,
-                                  session: Dict) -> List[str]:
-        """Flujo de registro por invitacion. Identico al de activacion."""
-        step = session["step"]
-        tmp  = session.get("temp_data", {})
-
-        if step == "name":
-            tmp["name"] = text.strip().title()
-            db.set_auth_session(chat_id, "invite", "email", tmp)
-            return [f"Hola {tmp['name']}. Tu correo electronico?"]
-
-        elif step == "email":
-            email = text.strip().lower()
-            if "@" not in email or "." not in email.split("@")[-1]:
-                return ["Ese correo no parece valido. Escribe tu email."]
-            if db.get_admin_by_email(email):
-                return ["Ese correo ya tiene una cuenta. Contacta al administrador."]
-            tmp["email"] = email
-            db.set_auth_session(chat_id, "invite", "password", tmp)
-            return ["Crea una contrasena. Minimo 8 caracteres."]
-
-        elif step == "password":
-            if len(text.strip()) < 8:
-                return ["Minimo 8 caracteres. Intenta de nuevo."]
-            tmp["password_hash"] = hash_password(text.strip())
-            db.set_auth_session(chat_id, "invite", "confirm", tmp)
-            return [
-                f"Cuenta a crear:\n"
-                f"  Nombre: {tmp['name']}\n"
-                f"  Email: {tmp['email']}\n"
-                f"  Rol: Administrador\n\n"
-                f"Confirmas? (si / no)"
-            ]
-
-        elif step == "confirm":
-            if text.lower().strip() in ("si", "sip", "dale", "ok", "claro", "yes"):
-                token      = tmp.get("invite_token", "")
-                invited_by = tmp.get("invited_by", "")
-                db.create_admin(
-                    chat_id=chat_id,
-                    email=tmp["email"],
-                    password_hash=tmp["password_hash"],
-                    name=tmp["name"],
-                    role="admin",
-                    token=token,
-                    invited_by=invited_by
-                )
-                # Consumir la invitacion
-                db.clear_auth_session(f"invite:{token}")
-                db.clear_auth_session(chat_id)
-
-                # Agregar a admin_chat_ids
-                clinic = db.get_clinic()
-                admin_ids = _parse_admin_ids(clinic.get("admin_chat_ids", []))
-                if chat_id not in admin_ids:
-                    admin_ids.append(chat_id)
-                    db.update_clinic(admin_chat_ids=admin_ids)
-
-                name = tmp["name"]
-                return [
-                    f"Listo {name}, ya tienes acceso como administrador.",
-                    "Escribe /ayuda para ver que puedes hacer."
-                ]
-            else:
-                db.clear_auth_session(chat_id)
-                return ["Registro cancelado."]
-
-        db.clear_auth_session(chat_id)
-        return ["Algo fallo. Pide al owner que genere un nuevo token de invitacion."]
-
-    # ─── Login para admins que ya existen ────────────────────────────────────
-    # (para el caso de que lleguen de un nuevo dispositivo / chat_id diferente)
-
-    async def _handle_login_flow(self, chat_id: str, text: str,
-                                 session: Dict) -> List[str]:
-        step = session["step"]
-        tmp  = session.get("temp_data", {})
-        attempts = session.get("attempts", 0)
-
-        if step == "email":
-            email = text.strip().lower()
-            admin = db.get_admin_by_email(email)
-            if not admin:
-                return ["No encontre una cuenta con ese email."]
-            tmp["email"] = email
-            db.set_auth_session(chat_id, "login", "password", tmp, attempts)
-            return ["Tu contrasena?"]
-
-        elif step == "password":
-            email = tmp.get("email", "")
-            admin = db.get_admin_by_email(email)
-            if not admin:
-                db.clear_auth_session(chat_id)
-                return ["Sesion expirada. Escribe tu email de nuevo."]
-
-            if attempts >= self.MAX_LOGIN_ATTEMPTS:
-                db.clear_auth_session(chat_id)
-                return ["Demasiados intentos fallidos. Contacta al administrador."]
-
-            if verify_password(text.strip(), admin["password_hash"]):
-                # Login exitoso — transferir acceso a este chat_id
-                db.create_admin(
-                    chat_id=chat_id,
-                    email=admin["email"],
-                    password_hash=admin["password_hash"],
-                    name=admin["name"],
-                    role=admin["role"],
-                    token=admin.get("activated_by_token", ""),
-                    invited_by=admin.get("invited_by_chat_id", "")
-                )
-                db.update_admin_login(chat_id)
-                db.clear_auth_session(chat_id)
-
-                clinic = db.get_clinic()
-                admin_ids = _parse_admin_ids(clinic.get("admin_chat_ids", []))
-                if chat_id not in admin_ids:
-                    admin_ids.append(chat_id)
-                    db.update_clinic(admin_chat_ids=admin_ids)
-
-                return [f"Bienvenido de nuevo, {admin['name']}."]
-            else:
-                db.increment_login_attempts(chat_id)
-                remaining = self.MAX_LOGIN_ATTEMPTS - attempts - 1
-                db.set_auth_session(chat_id, "login", "password", tmp, attempts + 1)
-                return [f"Contrasena incorrecta. {remaining} intentos restantes."]
-
-        db.clear_auth_session(chat_id)
-        return ["Sesion expirada. Escribe /login para intentar de nuevo."]
-
-    def _logout(self, chat_id: str) -> List[str]:
-        """Cierra la sesion del admin (elimina de admin_chat_ids pero no de DB)."""
-        clinic = db.get_clinic()
-        admin_ids = _parse_admin_ids(clinic.get("admin_chat_ids", []))
-        if chat_id in admin_ids:
-            admin_ids.remove(chat_id)
-            db.update_clinic(admin_chat_ids=admin_ids)
-        return ["Sesion cerrada. Para volver a entrar escribe /login."]
-
-    # ─── N8N Notification ────────────────────────────────────────────────────
-
-    async def _notify_n8n(self, event: str, data: Dict):
-        """Notifica a Santiago via N8N webhook."""
-        if not Config.N8N_WEBHOOK_URL:
-            return
-        try:
-            payload = {
-                "event":     event,
-                "timestamp": datetime.now().isoformat(),
-                **data
-            }
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                await client.post(Config.N8N_WEBHOOK_URL, json=payload)
-            log.info(f"[n8n] notificado: {event}")
-        except Exception as e:
-            log.warning(f"[n8n] error: {e}")
-
-
 # Instancia global de auth
 auth_engine: AuthEngine = None
 
 def init_auth():
     global auth_engine
     auth_engine = AuthEngine()
+
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -12533,12 +11642,23 @@ class MelissaUltra:
     """Orquestador principal de Melissa Ultra V7.0."""
 
     def __init__(self):
+        self.db = db
         self.analyzer = analyzer
         self.search = WebSearchEngine()
         self.reasoning: ReasoningEngine = None
         self.generator: ResponseGenerator = None
-        self.self_improvement: SelfImprovementEngine = None
-        self._conversation_registry = None
+        self.self_improvement = None
+        self.admin_learning: AdminLearningEngine = None
+        self.simulator: SimulationEngine = None
+        # ── Atributos base (antes de managers que los usan) ──────────────────────
+        self._demo_sessions: Dict[str, float] = {}
+        self._emoji_chats_off: set = set()
+        self._chat_routes: Dict[str, Dict[str, Any]] = {}
+
+        # Gestores de áreas separadas (v9)
+        self.demo_mgr = MelissaDemo(self)
+        self.admin_mgr = MelissaAdmin(self)
+        self.production_mgr = MelissaProduction(self)
         self._conversation_engine = None
 
         # V7.0 — orquestador de agentes especializados
@@ -12548,9 +11668,13 @@ class MelissaUltra:
         self._admin_pending: Dict[str, Dict] = {}
         self._last_reviewed_chat: Optional[str] = None
         self._availability_pending_patient: Optional[str] = None
-        self._demo_sessions: Dict[str, float] = {}
-        self._emoji_chats_off: set = set()  # v11: chats que pidieron SIN emojis
-        self._chat_routes: Dict[str, Dict[str, Any]] = {}
+
+        if _SESSION_MANAGER_AVAILABLE:
+            self._session_mgr = SessionManager(self._demo_sessions, self._emoji_chats_off)
+        if _AUDIO_HANDLER_AVAILABLE:
+            self._audio_handler = AudioHandler()
+        if _GENERATOR_MANAGER_AVAILABLE:
+            self._generator_mgr = GeneratorManager(llm_engine, None)
 
     def _remember_route(self, chat_id: str, route: Optional[Dict[str, Any]] = None):
         if not route:
@@ -12607,9 +11731,18 @@ class MelissaUltra:
         init_database()
         init_llm()
         init_auth()
+        self.admin_learning   = AdminLearningEngine(db)
+        self.simulator        = SimulationEngine(self)
+        self.reasoning        = ReasoningEngine(llm_engine)
+        self.generator        = ResponseGenerator(llm_engine, learning_engine=self.admin_learning)
         init_calendar()
         await init_mcp()
-        await init_task_manager()
+        try:
+            await init_task_manager()
+        except NameError:
+            log.warning("[startup] init_task_manager no disponible — saltando")
+        except Exception as _tm_err:
+            log.warning(f"[startup] init_task_manager error: {_tm_err}")
 
         # Nova governance bridge
         if _NOVA_AVAILABLE and Config.NOVA_ENABLED:
@@ -12651,9 +11784,15 @@ class MelissaUltra:
         except Exception as exc:
             log.warning(f"[business_bootstrap] error: {exc}")
 
+        self.admin_learning   = AdminLearningEngine(db)
+        self.simulator        = SimulationEngine(self)
         self.reasoning        = ReasoningEngine(llm_engine)
-        self.generator        = ResponseGenerator(llm_engine)
-        self.self_improvement = SelfImprovementEngine(llm_engine)
+        self.generator        = ResponseGenerator(llm_engine, learning_engine=self.admin_learning)
+        self.self_improvement = None
+        try:
+            self.self_improvement = SelfImprovementEngine(llm_engine)
+        except (NameError, AttributeError):
+            log.warning("[startup] SelfImprovementEngine no disponible")
 
         if Config.MELISSA_CORE_ENABLED and _MELISSA_CORE_AVAILABLE:
             try:
@@ -13285,551 +12424,51 @@ class MelissaUltra:
     async def process_message(self, chat_id: str, text: str,
                              is_audio: bool = False,
                              attachments: Optional[List[Dict[str, Any]]] = None,
-                             route: Optional[Dict[str, Any]] = None) -> List[str]:
-        """Procesa un mensaje y genera respuesta."""
+                             route: Optional[Dict[str, Any]] = None,
+                             is_simulation: bool = False) -> List[str]:
+        """Procesa un mensaje delegando a los gestores especializados."""
         start_time = time.time()
         attachments = attachments or []
         self._remember_route(chat_id, route)
-        route_info = self._resolve_route(chat_id, route)
-
+        
         try:
-            # ── Persistent Memory: load at start of every conversation turn ─────────
-            from melissa_memory import get_memory
-            instance_id = clinic.get("instance_id", "default") if clinic else "default"
-            memory = get_memory(instance_id)
-            memory_context = memory.load_context()
-            session_cache = memory.get_session_cache(chat_id)
-
-            # ── Inject memory context into prompt injection ─────────────────────
-            if memory_context:
-                if not pre_prompt_injection:
-                    pre_prompt_injection = ""
-                pre_prompt_injection += f"\n\n## Lo que sé de este negocio (memoria):\n{memory_context}\n"
-
-            # 1. Obtener contexto base (sin crear paciente todavia)
             clinic = db.get_clinic()
             admin_ids = _parse_admin_ids(clinic.get("admin_chat_ids", []))
-            is_admin = chat_id in admin_ids or db.get_admin(chat_id) is not None
+            is_admin = (chat_id in admin_ids or db.get_admin(chat_id) is not None)
+            
+            # En modo simulación, tratamos al admin como un paciente real
+            effective_is_admin = is_admin and not is_simulation
 
-            # 2. Auth check primero — incluso si la instancia está en demo
-            # para no bloquear login/activación/admin recovery.
-            if auth_engine and auth_engine.is_auth_message(chat_id, text):
+            # 1. Auth check (ignorar en simulación)
+            if not is_simulation and auth_engine and auth_engine.is_auth_message(chat_id, text):
                 result = await auth_engine.process(chat_id, text)
-                if result:
-                    return result
+                if result: return result
 
-            # ── MODO DEMO ────────────────────────────────────────────────────
-            # Cuando DEMO_MODE está activo, cualquier no-admin entra al flujo
-            # demo aunque la instancia ya esté configurada.
-            if Config.DEMO_MODE and not is_admin:
-                return await self._handle_demo_message(chat_id, text, clinic, attachments=attachments)
-            # ─────────────────────────────────────────────────────────────────
+            # 2. MODO DEMO
+            if Config.DEMO_MODE:
+                return await self.demo_mgr.handle(chat_id, text, clinic, attachments=attachments)
 
-            if attachments and is_admin:
-                asset_reply = await self._admin_ingest_assets(chat_id, text, attachments, clinic)
-                if asset_reply:
-                    return asset_reply
+            # 3. Admins / Setup
+            if not clinic.get("setup_done") or effective_is_admin:
+                return await self.admin_mgr.handle(chat_id, text, clinic)
 
-            # 4. Admins van a su propio handler — nunca tocan la tabla patients
-            if not clinic.get("setup_done") or is_admin:
-                return await self._handle_admin_or_setup(chat_id, text, clinic)
-
-            if attachments and not text.strip():
-                return ["Si quieres, escríbeme qué necesitas para ayudarte bien."]
-
-            # 5. Es paciente confirmado — ahora si cargar/crear su registro
-            # (visits solo se incrementa para pacientes reales, no admins)
-            patient = db.get_or_create_patient(chat_id)
+            # 4. PACIENTES (Producción)
             history = db.get_history(chat_id)
             conv_state = db.get_conversation_state(chat_id)
-            is_first_patient_turn = not any(msg.get("role") == "assistant" for msg in history)
-            
-            # 6. Análisis del mensaje
-            analysis = self.analyzer.analyze(text, history)
+            return await self.production_mgr.handle(chat_id, text, clinic, history, conv_state)
 
-            scope_mode, effective_text = _patient_message_scope(text, clinic)
-            llm_runtime_ready = self._llm_runtime_available()
-            if scope_mode == "meta" and not llm_runtime_ready:
-                meta_bubbles = self._handle_patient_meta_question(clinic, chat_id=chat_id, user_msg=text, history=history)
-                meta_response = " ||| ".join(meta_bubbles)
-                db.save_message(
-                    chat_id, "user", text,
-                    analysis=self._analysis_to_dict(analysis),
-                    model="",
-                    latency=0
-                )
-                db.save_message(
-                    chat_id, "assistant", meta_response,
-                    model="melissa_meta",
-                    latency=int((time.time() - start_time) * 1000)
-                )
-                conv_state.turn_count += 1
-                conv_state.last_intent = analysis.intent
-                db.save_conversation_state(conv_state)
-                db.record_metric("conversation", "response_time", (time.time() - start_time) * 1000)
-                db.record_metric("conversation", "intent", 1, {"intent": analysis.intent.name})
-                return meta_bubbles
-            if scope_mode == "off_topic" and not llm_runtime_ready:
-                offtopic_bubbles = self._handle_patient_off_topic(clinic, chat_id=chat_id, user_msg=text)
-                offtopic_response = " ||| ".join(offtopic_bubbles)
-                db.save_message(
-                    chat_id, "user", text,
-                    analysis=self._analysis_to_dict(analysis),
-                    model="",
-                    latency=0
-                )
-                db.save_message(
-                    chat_id, "assistant", offtopic_response,
-                    model="melissa_off_topic",
-                    latency=int((time.time() - start_time) * 1000)
-                )
-                conv_state.turn_count += 1
-                conv_state.last_intent = analysis.intent
-                db.save_conversation_state(conv_state)
-                db.record_metric("conversation", "response_time", (time.time() - start_time) * 1000)
-                db.record_metric("conversation", "intent", 1, {"intent": analysis.intent.name})
-                return offtopic_bubbles
-            if scope_mode == "mixed" and effective_text and effective_text != text:
-                text = effective_text
-                analysis = self.analyzer.analyze(text, history)
-
-            if trainer_gateway:
-                pref_reply = trainer_gateway.maybe_acknowledge_user_preference_message(
-                    chat_id=chat_id,
-                    user_msg=text,
-                    patient=patient,
-                )
-                if pref_reply:
-                    db.save_message(chat_id, "user", text)
-                    db.save_message(chat_id, "assistant", " ||| ".join(pref_reply))
-                    return pref_reply
-
-            core_bubbles = None
-            if not llm_runtime_ready:
-                core_bubbles = self._try_conversation_core(
-                    clinic=clinic,
-                    user_msg=text,
-                    history=history,
-                    is_admin=False,
-                    channel=str(route_info.get("platform") or ""),
-                )
-            if core_bubbles:
-                personality = self.generator._get_default_personality(clinic)
-                response = " ||| ".join(core_bubbles)
-                response = v8_process_response(
-                    response,
-                    chat_id=chat_id,
-                    archetype=getattr(personality, "archetype", "amigable") if personality else "amigable",
-                )
-                if owner_style_controller:
-                    response = owner_style_controller.enforce_output(
-                        response,
-                        is_admin=False,
-                        first_turn=is_first_patient_turn,
-                        chat_id=chat_id,
-                        clinic=clinic,
-                        user_msg=text,
-                    )
-                db.save_message(
-                    chat_id, "user", text,
-                    analysis=self._analysis_to_dict(analysis),
-                    model="",
-                    latency=0
-                )
-                db.save_message(
-                    chat_id, "assistant", response,
-                    model="melissa_core",
-                    latency=int((time.time() - start_time) * 1000)
-                )
-                conv_state.turn_count += 1
-                conv_state.last_intent = analysis.intent
-                db.save_conversation_state(conv_state)
-                db.record_metric("conversation", "response_time", (time.time() - start_time) * 1000)
-                db.record_metric("conversation", "intent", 1, {"intent": analysis.intent.name})
-                bubbles = self._split_bubbles(response, chat_id=chat_id)
-                if owner_style_controller:
-                    bubbles_text = owner_style_controller.enforce_output(
-                        " ||| ".join(bubbles),
-                        is_admin=False,
-                        first_turn=is_first_patient_turn,
-                        chat_id=chat_id,
-                        clinic=clinic,
-                        user_msg=text,
-                    )
-                    bubbles = [part.strip() for part in bubbles_text.split("|||") if part.strip()]
-                if conversation_intelligence:
-                    conversation_intelligence.update(chat_id, text, response, analysis)
-                return bubbles
-
-            if trainer_gateway or nova_rule_sync:
-                asyncio.create_task(
-                    trainer_process_client_msg(text, chat_id, patient=patient)
-                )
-
-            # V6.0 — Guardar idioma detectado en perfil del paciente
-            if getattr(analysis, "language", "es") != "es":
-                try:
-                    with db._conn() as c:
-                        c.execute(
-                            "UPDATE patients SET language=? WHERE chat_id=?",
-                            (analysis.language, chat_id)
-                        )
-                except Exception:
-                    pass
-            
-            # 5. Verificar urgencia
-            normalized_text = _normalize_conv_text(text or "")
-            explicit_emergency = any(
-                marker in normalized_text for marker in [
-                    "emergencia", "urgente", "urgencia", "me estoy desangrando",
-                    "sangrado", "no puedo respirar", "dolor insoportable",
-                    "dolor muy fuerte", "convulsion", "convulsión",
-                ]
-            )
-            if analysis.urgency == UrgencyLevel.CRITICAL and explicit_emergency:
-                return await self._handle_emergency(chat_id, text, analysis, clinic)
-            
-            # 6. Busqueda web inteligente por intencion
-            search_context = ""
-            kb_context = ""
-            calendar_context = ""
-
-            # 6a. Base de conocimiento primero (maxima prioridad)
-            if kb and kb.has_content():
-                kb_context = kb.retrieve(text)
-
-            # 6b. Calendario — si el paciente pregunta por disponibilidad
-            if calendar_bridge and calendar_bridge.needs_calendar(text):
-                if calendar_bridge.has_google_calendar():
-                    # Consulta real a Google Calendar
-                    calendar_context = await calendar_bridge.get_availability_summary()
-                    log.info("[calendar] disponibilidad inyectada en context")
-                elif calendar_bridge.has_calendly():
-                    # Calendly: Melissa lo menciona en la respuesta
-                    calendar_context = (
-                        f"CALENDLY: El link de agenda del dueño es {calendar_bridge._calendly_link}. "
-                        f"Puedes compartirlo al paciente para que escoja el horario que más le convenga."
-                    )
-                    log.info("[calendar] Calendly link disponible")
-                else:
-                    # Sin calendario — notificar al admin automáticamente
-                    admin_ids = _parse_admin_ids(clinic.get("admin_chat_ids", []))
-                    if admin_ids:
-                        patient_name = patient.get("name", "")
-                        asyncio.create_task(
-                            calendar_bridge.notify_admin_availability_request(
-                                admin_ids, patient_name, text, self._send_message
-                            )
-                        )
-                        self._availability_pending_patient = chat_id  # paciente esperando respuesta
-                        calendar_context = (
-                            "DISPONIBILIDAD: No tengo acceso a la agenda del dueño ahora mismo. "
-                            "Ya le pregunté al dueño y te voy a confirmar en unos minutos. "
-                            "Responde al paciente que ya le confirmas la disponibilidad."
-                        )
-                        log.info("[calendar] admin notificado autonomamente")
-
-            # 6c. Busqueda medica especializada si menciona procedimiento
-            procedure = self.search.detect_procedure(text) if hasattr(self.search, 'detect_procedure') else None
-            patient_age = self.search.extract_age(text) if hasattr(self.search, 'extract_age') else None
-
-            if procedure and hasattr(self.search, 'medical'):
-                search_context = await self.search.medical(
-                    procedure, question=text, patient_age=patient_age,
-                    clinic_services=clinic.get("services", [])
-                )
-                log.info(f"[medical_search] procedimiento={procedure}, edad={patient_age}")
-            elif analysis.requires_search:
-                search_context = await self._smart_search(text, analysis, clinic)
-
-            # Fusionar contextos (calendar_context va primero — es info operacional)
-            if calendar_context:
-                search_context = calendar_context + ("\n\n" + search_context if search_context else "")
-
-            # ── V7.0: Orquestador de agentes especializados ───────────────────
-            # Intenta responder con el agente correcto (prompt mínimo, sin LLM para clasificar).
-            # Si el orquestador devuelve None → cae al generator clásico (backward compat).
-            if self._orchestrator:
-                try:
-                    v7_bubbles = await self._orchestrator.process(
-                        chat_id=chat_id,
-                        text=text,
-                        clinic=clinic,
-                        patient=patient,
-                        history=history,
-                        search_context=search_context,
-                        kb_context=kb_context,
-                        calendar_info=calendar_context,
-                    )
-                    if v7_bubbles:
-                        personality = self.generator._get_default_personality(clinic)
-                        v7_response = " ||| ".join(v7_bubbles)
-                        v7_response = self.generator._apply_output_pipeline(
-                            response=v7_response,
-                            personality=personality,
-                            chat_id=chat_id,
-                            clinic=clinic,
-                            user_msg=text,
-                            history=history,
-                            is_admin=False,
-                        )
-                        v7_response = v8_process_response(
-                            v7_response,
-                            chat_id=chat_id,
-                            archetype=getattr(personality, "archetype", "amigable"),
-                        )
-                        v7_bubbles = self._split_bubbles(v7_response, chat_id=chat_id)
-                        # Guardar mensajes y métricas igualmente
-                        db.save_message(chat_id, "user", text,
-                            analysis=self._analysis_to_dict(analysis), model="", latency=0)
-                        db.save_message(chat_id, "assistant", " ||| ".join(v7_bubbles),
-                            model="v7_agent", latency=int((time.time() - start_time) * 1000))
-                        conv_state.turn_count += 1
-                        conv_state.last_intent = analysis.intent
-                        db.save_conversation_state(conv_state)
-                        db.record_metric("conversation", "response_time",
-                            (time.time() - start_time) * 1000)
-                        db.record_metric("v7", "agent_response", 1)
-                        return v7_bubbles
-                except Exception as _v7_err:
-                    log.warning("[v7] error en orquestador, fallback a generator: %s", _v7_err)
-            # ─────────────────────────────────────────────────────────────────
-
-            personality = self.generator._get_default_personality(clinic)
-            first_turn_token_count = len(_normalize_conv_text(text).split())
-
-            # 7. Razonamiento (clásico — solo si V7 no respondió)
-            reasoning = await self.reasoning.reason(
-                text, analysis, clinic, history, conv_state
-            )
-
-            # 8. Generar respuesta (clásico)
-            response = await self.generator.generate(
-                text,
-                analysis,
-                reasoning,
-                clinic,
-                patient,
-                history,
-                search_context,
-                personality=personality,
-                kb_context=kb_context,
-                chat_id=chat_id
-            )
-
-            # Saludos cortos también deben pasar por LLM. Solo si el modelo falla
-            # por completo dejamos un respaldo estructural para no dejar el chat mudo.
-            if is_first_patient_turn and not str(response or "").strip():
-                reasoning = {"_metadata": {"model": "seeded_first_turn_fallback"}}
-                response = self.generator._normalize_first_patient_turn(
-                    response="",
-                    clinic=clinic,
-                    personality=personality,
-                    user_msg=text,
-                    history=history,
-                )
-            
-            # 9. Extraer acciones (citas, nombres, etc.)
-            response, actions = self._extract_actions(response, chat_id, clinic)
-            
-            # 9b. Notificar a Omni sobre eventos relevantes (fire-and-forget)
-            clinic_name = clinic.get("name", "")
-            if patient.get("is_new"):
-                asyncio.create_task(asyncio.to_thread(
-                    notify_omni, "nueva_conversacion",
-                    f"Nuevo paciente en {clinic_name}", clinic_name
-                ))
-            if analysis.intent == IntentType.APPOINTMENT_REQUEST:
-                asyncio.create_task(asyncio.to_thread(
-                    notify_omni, "solicitud_cita",
-                    f"Paciente pidió cita en {clinic_name}: {text[:80]}", clinic_name
-                ))
-            if analysis.intent == IntentType.COMPLAINT:
-                asyncio.create_task(asyncio.to_thread(
-                    notify_omni, "queja_paciente",
-                    f"Queja en {clinic_name}: {text[:120]}", clinic_name
-                ))
-
-            # ── V6.0: Closing score alert ─────────────────────────────────────
-            _closing = getattr(analysis, "closing_score", 0.0)
-            _temp    = getattr(analysis, "lead_temperature", "cold")
-            if _closing >= 0.75:
-                # Avisar al admin — este cliente está listo para cerrar
-                _patient_name = patient.get("name") or f"cliente {chat_id[-4:]}"
-                _alert_msg = (
-                    f"este cliente está listo para cerrar\n"
-                    f"{_patient_name}: \"{text[:100]}\"\n"
-                    f"Score: {int(_closing*100)}% temperatura: {_temp}\n"
-                    f"Ver conversacion: /chat {chat_id}"
-                )
-                asyncio.create_task(self._notify_hot_lead(clinic, _alert_msg))
-                asyncio.create_task(asyncio.to_thread(
-                    notify_omni, "lead_caliente",
-                    f"{_patient_name} listo para cerrar ({int(_closing*100)}%)", clinic_name
-                ))
-
-            # ── V6.0: Auto follow-up si el cliente abandona ───────────────────
-            # Se programa para 48h — si el cliente responde antes, se cancela
-            # FIX CRÍTICO: cancelar follow-up previo antes de crear nuevo
-            # Sin esto, cada mensaje crea una tarea nueva → spam masivo
-            if task_manager and len(history) >= 2 and not Config.DEMO_MODE:
-                try:
-                    with db._conn() as _c:
-                        _c.execute(
-                            "UPDATE tasks SET status='cancelled' "
-                            "WHERE type='follow_up' AND status='pending' "
-                            "AND json_extract(data,'$.chat_id')=?",
-                            (chat_id,)
-                        )
-                except Exception:
-                    pass
-                run_at = datetime.now() + timedelta(hours=48)
-                task_manager.schedule_task(
-                    task_type="follow_up",
-                    data={
-                        "chat_id":      chat_id,
-                        "reason":       "cold_lead",
-                        "last_message": text[:200],
-                        "patient_name": patient.get("name") or "",
-                    },
-                    scheduled_for=run_at,
-                    priority=3
-                )
-
-            response = v8_process_response(
-                response,
-                chat_id=chat_id,
-                archetype=getattr(personality, 'archetype', 'amigable') if personality else 'amigable'
-            )
-            response = self.generator._normalize_first_patient_turn(
-                response=response,
-                clinic=clinic,
-                personality=personality,
-                user_msg=text,
-                history=history,
-            )
-            if owner_style_controller:
-                response = owner_style_controller.enforce_output(
-                    response,
-                    is_admin=False,
-                    first_turn=is_first_patient_turn,
-                    chat_id=chat_id,
-                    clinic=clinic,
-                    user_msg=text,
-                )
-            
-            # 10. Guardar mensaje y análisis (serialización segura de enums)
-            db.save_message(
-                chat_id, "user", text,
-                analysis=self._analysis_to_dict(analysis),
-                model="",
-                latency=0
-            )
-            
-            db.save_message(
-                chat_id, "assistant", response,
-                model=reasoning.get("_metadata", {}).get("model", ""),
-                latency=int((time.time() - start_time) * 1000)
-            )
-            
-            # 11. Actualizar estado de conversación
-            conv_state.turn_count += 1
-            conv_state.last_intent = analysis.intent
-            db.save_conversation_state(conv_state)
-            
-            # 12. Registrar métricas
-            db.record_metric("conversation", "response_time", 
-                           (time.time() - start_time) * 1000)
-            db.record_metric("conversation", "intent", 
-                           1, {"intent": analysis.intent.name})
-            
-            # 13. Dividir en burbujas
-            if conversation_intelligence:
-                conversation_intelligence.update(chat_id, text, response, analysis)
-            bubbles = self._split_bubbles(response, chat_id=chat_id)
-            if owner_style_controller:
-                bubbles_text = owner_style_controller.enforce_output(
-                    " ||| ".join(bubbles),
-                    is_admin=False,
-                    first_turn=is_first_patient_turn,
-                    chat_id=chat_id,
-                    clinic=clinic,
-                    user_msg=text,
-                )
-                bubbles = [b.strip() for b in re.split(r'\s*\|\|\|\s*', bubbles_text or "") if b.strip()]
-
-            # 14. Nova — filtrar burbujas antes de enviar
-            if _NOVA_AVAILABLE and Config.NOVA_ENABLED:
-                guard = get_guard()
-                if guard:
-                    try:
-                        allowed, blocked = await guard.filter_bubbles(
-                            bubbles,
-                            patient_chat_id=chat_id,
-                            context=text[:200],
-                            clinic_name=clinic.get("name", "")
-                        )
-                        if blocked:
-                            log.info(f"[nova] {len(blocked)} burbuja(s) bloqueadas para {chat_id}")
-                            db.record_metric("nova", "blocked", len(blocked))
-                        if allowed:
-                            return allowed
-                        # Todas bloqueadas — respuesta neutra
-                        return ["En este momento no puedo responder eso. Te comunico con alguien del equipo."]
-                    except Exception as e:
-                        log.warning(f"[nova] filter_bubbles error: {e} — sending anyway")
-
-            # ── Save to persistent memory and session cache ─────────────────────
-            try:
-                if 'memory' in dir():
-                    memory.append_to_cache(chat_id, "user", text)
-                    _resp_str = " ||| ".join(bubbles) if bubbles else ""
-                    if _resp_str:
-                        memory.append_to_cache(chat_id, "assistant", _resp_str)
-            except Exception as _mem_err:
-                log.warning(f"[memory] save error: {_mem_err}")
-
-            return bubbles
-            
         except Exception as e:
-            log.error(f"Error processing message: {e}", exc_info=True)
+            log.error(f"Error processing message from {chat_id}: {e}", exc_info=True)
             db.record_metric("error", "message_processing", 1, {"error": str(e)})
-            asyncio.create_task(asyncio.to_thread(
-                notify_omni, "error_procesamiento",
-                f"Error en mensaje: {str(e)[:100]}"
-            ))
-            return ["ya regreso, un segundito"]
-    
-    # ═══════════════════════════════════════════════════════════════════════════
-    # MODO DEMO — Responde sin setup, sin tokens, directo al LLM
-    # ═══════════════════════════════════════════════════════════════════════════
-
-    # ── Comandos secretos del menú oculto de la demo ─────────────────────────
-    _DEMO_COMMANDS = {
-        "/formal":"/formal", "/amigable":"/amigable", "/luxury":"/luxury",
-        "/directa":"/directa", "/energica":"/energica", "/empatica":"/empatica",
-        "/experta":"/experta", "/juvenil":"/juvenil",
-        "/objecion":"/objecion", "/cita":"/cita", "/stats":"/stats",
-        "/prueba":"/prueba", "/cierre":"/cierre", "/bot":"/bot",
-        "/memoria":"/memoria", "/2am":"/2am", "/competencia":"/competencia",
-        "/precio":"/precio", "/siguiente":"/siguiente",
-    }
-    _DEMO_TRICKS_ORDER = [
-        ("/objecion",   "ver cómo manejo objeciones en vivo"),
-        ("/cita",       "ver cómo agendo una cita completa"),
-        ("/luxury",     "activar personalidad premium"),
-        ("/empatica",   "cambiar a modo empático y de escucha"),
-        ("/stats",      "ver el impacto en números reales"),
-        ("/prueba",     "lanzarme el mensaje más difícil que tengas"),
-        ("/cierre",     "ver cómo cierro una venta"),
-        ("/directa",    "activar modo al grano sin rodeos"),
-        ("/menu",       "ver modo bot con emojis y menú numerado"),
-        ("/2am",        "verme responder a las 2 de la madrugada"),
-        ("/memoria",    "ver qué recuerdo de esta conversación"),
-        ("/experta",    "cambiar a modo técnico y preciso"),
-        ("/modelo",     "cambiar el modelo de IA que me impulsa"),
-    ]
-
+            
+            # Recuperación: si estamos en setup y algo falla, avisamos y pedimos reintentar
+            clinic = db.get_clinic()
+            if not clinic.get("setup_done"):
+                return [
+                    "Perdona, tuve un pequeño error técnico mientras configurábamos.",
+                    "¿Podrías repetir lo último que me dijiste? O si prefieres, escribe /reset para empezar el setup de nuevo."
+                ]
+            return ["Perdona, tuve un pequeño cruce de cables. ¿Me podrías repetir eso último?"]
     async def _handle_demo_message(self, chat_id: str, text: str,
                                     clinic: Dict,
                                     attachments: Optional[List[Dict[str, Any]]] = None) -> List[str]:
@@ -13888,29 +12527,36 @@ class MelissaUltra:
                 text = "[documento adjunto]"
         if not hasattr(self, "_emoji_chats_off"):
             self._emoji_chats_off = set()
-        now = time.time()
-        ttl = Config.DEMO_SESSION_TTL
-        sk  = f"demo_{chat_id}"
 
-        # ── Gestión de sesión ─────────────────────────────────────────────────
-        last_seen = self._demo_sessions.get(sk + "_ts", 0)
-        is_new    = (now - last_seen) > ttl
-        self._demo_sessions[sk + "_ts"] = now
-
-        # Limpiar sesiones viejas
-        self._demo_sessions = {
-            k: v for k, v in self._demo_sessions.items()
-            if not k.endswith("_ts") or (now - v) < ttl * 2
-        }
-
-        if is_new:
-            # Reset completo al expirar
-            keys_del = [k for k in list(self._demo_sessions) if k.startswith(sk+"_") and not k.endswith("_ts")]
-            for k in keys_del: del self._demo_sessions[k]
-            try:
-                with db._conn() as c:
-                    c.execute("DELETE FROM conversations WHERE chat_id=?", (chat_id,))
-            except Exception: pass
+        # ── Gestión de sesión via SessionManager ───────────────────────────────
+        if _SESSION_MANAGER_AVAILABLE and hasattr(self, "_session_mgr"):
+            is_new, keys_del = self._session_mgr.touch_and_cleanup(chat_id)
+            if is_new:
+                for k in keys_del:
+                    del self._demo_sessions[k]
+                try:
+                    with db._conn() as c:
+                        c.execute("DELETE FROM conversations WHERE chat_id=?", (chat_id,))
+                except Exception: pass
+            sk = f"demo_{chat_id}"
+        else:
+            now = time.time()
+            ttl = Config.DEMO_SESSION_TTL
+            sk  = f"demo_{chat_id}"
+            last_seen = self._demo_sessions.get(sk + "_ts", 0)
+            is_new    = (now - last_seen) > ttl
+            self._demo_sessions[sk + "_ts"] = now
+            self._demo_sessions = {
+                k: v for k, v in self._demo_sessions.items()
+                if not k.endswith("_ts") or (now - v) < ttl * 2
+            }
+            if is_new:
+                keys_del = [k for k in list(self._demo_sessions) if k.startswith(sk+"_") and not k.endswith("_ts")]
+                for k in keys_del: del self._demo_sessions[k]
+                try:
+                    with db._conn() as c:
+                        c.execute("DELETE FROM conversations WHERE chat_id=?", (chat_id,))
+                except Exception: pass
 
         history  = db.get_history(chat_id) if db else []
         now_dt   = now_col()
@@ -16913,74 +15559,6 @@ OBJECIONES
 
         return _send(r)
 
-    async def _handle_command(self, chat_id: str, text: str,
-                              route: Optional[Dict[str, Any]] = None) -> Optional[List[str]]:
-        """Command registry — runs BEFORE session lookup, before LLM."""
-        cmd = text.strip()
-        if not cmd.startswith("/"):
-            return None
-
-        # /help — show all commands
-        if cmd in ("/help", "/ayuda", "/comandos"):
-            # Check if in demo mode with business name
-            bn = self._demo_sessions.get(chat_id + "_name", "")
-            if bn:
-                # Full demo command list
-                return [(
-                    "esto es lo que puedo mostrarte 👇\n\n"
-                    "🎭 Personalidades: /formal · /amigable · /luxury · /directa · /empatica · /experta · /juvenil\n\n"
-                    "💬 Situaciones reales:\n"
-                    "objecion — cliente difícil\n"
-                    "cita — agendamiento completo\n"
-                    "cierre — técnica de cierre\n"
-                    "competencia — ya fui a otro lado\n"
-                    "precio — está muy caro\n"
-                    "prueba — mándame el más difícil\n"
-                    "bot — soy un bot?\n"
-                    "2am — respuesta a las 2am\n\n"
-                    "📊 Demo y datos:\n"
-                    "stats — impacto en números\n"
-                    "memoria — qué recuerdo de ti\n"
-                    "menu — modo bot con emojis\n\n"
-                    "⚙️ Ajustes:\n"
-                    "usa emojis / sin emojis\n"
-                    "siguiente — próximo truco\n"
-                    "/modelo — cambiar el modelo\n"
-                    "reset — empezar de nuevo\n\n"
-                    "escribe sin slash para activar"
-                )]
-            return [
-                "/help — este menú\n"
-                "/reset — reiniciar sesión\n"
-                "/bot — modo bot/recepcionista\n"
-                "/status — estado de sesión\n"
-                "/memoria — lo que sé de ti"
-            ]
-
-        # /reset
-        if cmd in ("/reset", "/reiniciar"):
-            keys_del = [k for k in list(self._demo_sessions) if k.startswith(chat_id + "_") and not k.endswith("_ts")]
-            for k in keys_del:
-                try:
-                    del self._demo_sessions[k]
-                except Exception:
-                    pass
-            return ["listo, sesión limpia ||| empezamos de nuevo"]
-
-        # /status
-        if cmd in ("/status", "/estado"):
-            bn = self._demo_sessions.get(chat_id + "_name", "")
-            return [f"Estado: {'demo activa' if bn else 'en onboarding'} ||| negocio: {bn or 'sin nombre'}"]
-
-        # /bot
-        if cmd in ("/bot", "/recepcionista"):
-            return ["modo recepcionista ||| háblame como cliente y te respondo en contexto"]
-
-        # /memoria
-        if cmd in ("/memoria", "/memoria"):
-            return ["no tengo memoria activa todavía ||| en la próxima versión lo tendre"]
-
-        return None  # unrecognized
 
 
     async def _handle_admin_or_setup(self, chat_id: str, text: str,
@@ -17007,14 +15585,21 @@ OBJECIONES
                     if clinic_name:
                         return [f"Hola. En este momento estamos terminando de configurar el sistema. Vuelve pronto."]
                     else:
-                        # Instancia completamente nueva sin configurar — mostrar solo si hay admins registrados
                         if db.list_admins():
                             return ["Hola. En este momento no estamos disponibles. Vuelve pronto."]
                         else:
-                            # Sin admins todavia: mostrar prompt de activacion
+                            sector = clinic.get("sector", "otro")
+                            sector_name = "negocio"
+                            try:
+                                sector_name = SECTORS.get(sector, SECTORS["otro"]).name if sector else "negocio"
+                            except Exception:
+                                pass
+                            clinic_name = clinic.get("name") or f"{sector_name} en proceso"
                             return [
-                                "Este servicio aun no esta activo.",
-                                "Si eres el administrador, necesitas un codigo de activacion para comenzar."
+                                f"¡Hola! 👋 Bienvenido a {clinic_name}.",
+                                "Soy Melissa, la recepcionista virtual.",
+                                "Todavía estoy aprendiendo cómo funciona tu negocio — para eso necesito que me cuentes un poco.",
+                                "Cuando estés listo, escribe /configurar y empezamos. Si quieres probarme primero, escribe algo y te respondo como si ya estuviera configurada.",
                             ]
 
             # Comandos slash
@@ -17055,6 +15640,10 @@ OBJECIONES
                 return ["Sesion cerrada."]
             elif cmd == "/kb":
                 return await self._admin_kb_status()
+            elif cmd == "/simular":
+                if self.simulator:
+                    return self.simulator.start(chat_id)
+                return ["El motor de simulación no está disponible."]
             elif cmd == "/kb borrar":
                 return await self._admin_kb_clear()
             elif cmd == "/brand":
@@ -17287,12 +15876,17 @@ OBJECIONES
 
         # ── Inicio ─────────────────────────────────────────────────────────────
         if setup_step == "idle":
-            # NO sobreescribir admin_chat_ids aqui — ya fue seteado por la activacion
-            # Solo avanzar el step del setup
+            admin_name_greeting = ""
+            try:
+                rec = db.get_admin(chat_id) if db else None
+                if rec and rec.get("name") and rec["name"] not in ("", "Admin"):
+                    admin_name_greeting = f" Hola, {rec['name']}."
+            except Exception:
+                pass
             db.update_clinic(setup_step="name")
             return [
-                "listo, te configuro eso",
-                "cómo se llama tu clínica o negocio"
+                f"¡Hola!{admin_name_greeting} Vamos a dejarme lista para tu negocio.",
+                "¿Cómo se llama tu clínica o negocio?"
             ]
 
         # ── Confirmar datos descubiertos en web ─────────────────────────────────
@@ -17477,20 +16071,33 @@ OBJECIONES
         ) if _KB_AVAILABLE else ""
 
         return [
-            f"Listo, soy {name}{pricing_note}.",
-            f"Servicios: {svcs}.{next_step}{kb_invite}"
+            f"¡Listo! Soy {name}.{pricing_note}",
+            f"Servicios: {svcs}.{next_step}{kb_invite}",
+            "Estoy aquí cuando llegue tu primer paciente. Cuéntame más sobre cómo te gusta que les hable y yo aprendo.",
         ]
 
     async def _discover_clinic_from_web(self, clinic_name: str, city: str = "Medellin") -> Dict:
         """
         Busca la clinica en Google y extrae info estructurada via LLM.
-        Retorna dict con: name, services, schedule, phone, address, tagline, confidence.
+        V9 Upgrade: Timeout robusto y protección contra cuelgues.
         """
         try:
+            # ── Paso 1: Búsqueda Web con Timeout ──────────────────────────────
             search_query = f"{clinic_name} {city} servicios precios horario telefono"
             log.info(f"[autodiscovery] buscando: {search_query}")
 
-            snippets = await self.search.search(search_query, context="")
+            try:
+                # Timeout de 15s para la búsqueda
+                snippets = await asyncio.wait_for(
+                    self.search.search(search_query, context=""),
+                    timeout=15.0
+                )
+            except asyncio.TimeoutError:
+                log.warning(f"[autodiscovery] búsqueda expiró para {clinic_name}")
+                return {}
+            except Exception as se:
+                log.warning(f"[autodiscovery] error en búsqueda: {se}")
+                return {}
 
             if not snippets:
                 log.info(f"[autodiscovery] no se encontro info de {clinic_name}")
@@ -17520,13 +16127,21 @@ Extrae y retorna SOLO un JSON valido con esta estructura exacta:
 confidence: 0.0 si no encontraste nada relevante, 0.5 si encontraste algo, 0.9 si encontraste bastante.
 Si un campo no aplica o no se encontro, usa "" o []. Solo JSON, sin texto extra."""
 
-            response, _ = await llm_engine.complete(
-                [{"role": "user", "content": extraction_prompt}],
-                model_tier="fast",
-                temperature=0.1,
-                max_tokens=600,
-                use_cache=False
-            )
+            try:
+                # Timeout de 20s para el LLM
+                response, _ = await asyncio.wait_for(
+                    llm_engine.complete(
+                        [{"role": "user", "content": extraction_prompt}],
+                        model_tier="fast",
+                        temperature=0.1,
+                        max_tokens=600,
+                        use_cache=False
+                    ),
+                    timeout=20.0
+                )
+            except asyncio.TimeoutError:
+                log.warning(f"[autodiscovery] LLM expiró para {clinic_name}")
+                return {}
 
             # Limpiar y parsear
             clean = response.strip()
@@ -17538,7 +16153,7 @@ Si un campo no aplica o no se encontro, usa "" o []. Solo JSON, sin texto extra.
             return data
 
         except Exception as e:
-            log.warning(f"[autodiscovery] error: {e}")
+            log.warning(f"[autodiscovery] error critico: {e}")
             return {}
 
     def _setup_next_bubbles(self, completed_step: str, value: str,
@@ -17586,6 +16201,8 @@ Si un campo no aplica o no se encontro, usa "" o []. Solo JSON, sin texto extra.
                 return "Sin precios por ahora, bien."
             return "Precios guardados."
         return ""
+
+
 
 
     async def _handle_emergency(self, chat_id: str, text: str,
@@ -19233,9 +17850,7 @@ escriba EXACTAMENTE como él. Primera persona, directo."""
                                      clinic: Dict) -> List[str]:
         """
         Cerebro conversacional del modo admin.
-        Principio: el LLM entiende el contexto completo y decide qué hacer.
-        La capa local solo valida y aplica a DB.
-        Esto hace que Melissa se sienta como una empleada inteligente, no un formulario.
+        V9 Upgrade: Aprendizaje natural + Simulaciones interactivas.
         """
         text_low = text.lower().strip()
         persona = clinic.get("persona_config", {})
@@ -19245,6 +17860,57 @@ escriba EXACTAMENTE como él. Primera persona, directo."""
             except Exception:
                 persona = {}
         agent_name = persona.get("name", "Melissa")
+
+        # ── COMANDOS DE APRENDIZAJE NATURAL ──────────────────────────────────
+        # Detecta frases como "no digas X", "usa emojis", "dile Y"
+        LEARNING_SIGNALS = [
+            "no digas", "no le digas", "deja de decir", "quita la frase",
+            "usa emojis", "ponle emojis", "responde con", "dile que",
+            "siempre di", "nunca digas", "aprende esto", "guarda esto",
+            "cambia la forma", "ahora dile", "cuando pregunten por",
+            "la respuesta correcta es", "háblale de", "menciona que"
+        ]
+        if any(s in text_low for s in LEARNING_SIGNALS):
+            if self.admin_learning:
+                reply = self.admin_learning.add_instruction(chat_id, text)
+                return [reply]
+
+        if "limpia las instrucciones" in text_low or "borra lo aprendido" in text_low:
+            if self.admin_learning:
+                return [self.admin_learning.clear()]
+
+        # ── MODO SIMULACIÓN ──────────────────────────────────────────────────
+        SIM_SIGNALS = [
+            "simula", "simulaci", "como cliente", "hazte cliente",
+            "actúa como cliente", "modo cliente", "hagamos una prueba",
+            "ponte a prueba", "pruébame", "quiero ver cómo respondes",
+            "simulemos", "haz como si fueras un paciente"
+        ]
+        if any(s in text_low for s in SIM_SIGNALS):
+            if self.simulator:
+                return self.simulator.start(chat_id)
+
+        # ── SEGURIDAD: Bloquear intento de login inseguro ────────────────────
+        # Si un usuario que NO es admin intenta enviar algo que parece login por nombre
+        if ":" in text and ("password" in text_low or "contraseña" in text_low):
+            is_admin = db.get_admin(chat_id) is not None
+            if not is_admin:
+                log.warning(f"[security] Intento de login inseguro bloqueado desde {chat_id}")
+                return ["Por seguridad, no compartas contraseñas por este medio. Usa /login para iniciar sesión de forma segura."]
+
+        # ── Reportes de Conversaciones ───────────────────────────────────────
+        REPORT_SIGNALS = [
+            "que han dicho", "qué han dicho", "quien ha escrito", "quién ha escrito",
+            "ultimos pacientes", "últimos pacientes", "conversaciones", "chats",
+            "qué me han enviado", "que me han enviado", "mensajes recientes"
+        ]
+        if any(s in text_low for s in REPORT_SIGNALS):
+            return await self._admin_show_recent_conversation_browser(chat_id)
+
+        # ── Ver un chat específico ───────────────────────────────────────────
+        if "ver a " in text_low or "ver el chat de" in text_low:
+            # Extraer número o nombre si es posible (implementación simplificada)
+            return await self._admin_show_chats()
 
         # ── Auto-detección de credenciales WhatsApp ─────────────────────────
         wa_creds = _detect_wa_credentials(text)
@@ -19268,17 +17934,8 @@ escriba EXACTAMENTE como él. Primera persona, directo."""
                 return await self._admin_nova_add_rule(text, clinic)
 
         # ── Simulación en lenguaje natural — "hagamos una simulación", "cómo le hablarías" ──
-        SIM_SIGNALS = [
-            "simula", "simulaci", "como cliente", "hazte cliente",
-            "actúa como cliente", "modo cliente", "habla como",
-            "hagamos una prueba", "pon a prueba", "pruébate", "pruébame",
-            "quiero ver cómo", "cómo hablarías", "cómo le hablarías",
-            "muéstrame cómo", "muéstrame cómo resp", "demuéstrame",
-            "haz como si", "que hagamos", "hagamos el", "simulemos",
-            "cómo atenderías", "cómo responderías", "respóndele como",
-        ]
-        if any(s in text_low for s in SIM_SIGNALS):
-            return await _admin_simular_cliente(chat_id, "libre", clinic)
+        # (Lógica delegada al SimulationEngine en la parte superior del método)
+        pass
 
         # ── KB automático: texto largo con info de la clínica ─────────────────
         if len(text) > 300 and kb is not None and _KB_AVAILABLE:
@@ -19433,13 +18090,40 @@ escriba EXACTAMENTE como él. Primera persona, directo."""
         Admin brain. Le damos identidad y contexto — el LLM piensa solo.
         Sin ejemplos. Sin lookup tables. Temperatura alta. IA real.
         """
-        admin_name = "el dueño"
-        try:
-            rec = db.get_admin(chat_id) if db else None
-            if rec and rec.get("name") and rec["name"] not in ("", "Admin"):
-                admin_name = rec["name"]
-        except Exception:
-            pass
+        # Si es la primera vez que hablan (historial vacío), Melissa se presenta
+        is_first_turn = len(history) == 0
+        setup_done = bool(clinic.get("setup_done"))
+
+        # Detectar si el admin ya tiene perfil en DB
+        admin_rec = db.get_admin(chat_id) if db else None
+        admin_name_from_db = ""
+        if admin_rec and admin_rec.get("name") and admin_rec["name"] not in ("", "Admin"):
+            admin_name_from_db = admin_rec["name"]
+            admin_name = admin_name_from_db
+
+        # Intro para primer mensaje — Melissa se presenta naturalmente
+        first_time_greeting = ""
+        if is_first_turn and setup_done:
+            clinic_name = clinic.get("name", "tu negocio") or "tu negocio"
+            sector_name = SECTORS.get(clinic.get("sector", ""), SECTORS["otro"]).name if clinic.get("sector") else "negocio"
+            if admin_name_from_db:
+                first_time_greeting = f"""Estás empezando una conversación con {admin_name_from_db}.
+Este es el primer mensaje que le envías. Preséntate con calidez, natural, como lo haría una empleada nueva que está conociendo a su jefe.
+Di quién eres (tu nombre es {agent_name}), para qué estás (la recepcionista virtual de {clinic_name}), y pregunta en una línea cómo quieres que funcione.
+Sé breve, cálida y directa. No des lista de funciones. No suenes a tutorial."""
+            else:
+                first_time_greeting = f"""Estás empezando una conversación con el dueño de {clinic_name}.
+Este es el primer mensaje que le envías. Preséntate con calidez, natural, como lo haría una empleada nueva que está conociendo a su jefe.
+Di quién eres (tu nombre es {agent_name}), para qué estás (la recepcionista virtual de {clinic_name}), y pregunta en una línea cómo quiere que funcione.
+Si el negocio tiene {sector_name}, adapta el tono al sector. Sé breve, cálida y directa."""
+
+        # Detectar si el admin está preguntando quién es Melissa
+        text_low = text.lower().strip() if text else ""
+        is_who_are_you = any(kw in text_low for kw in [
+            "quién eres", "quien eres", "who are you", "como te llamas",
+            "cómo te llamas", "de qué trata", "de que trata", "qué haces",
+            "qué eres", "que eres", "para qué estás", "para que estás"
+        ])
 
         services = clinic.get("services", [])
         pricing  = clinic.get("pricing", {})
@@ -19561,8 +18245,12 @@ No hables como dashboard, soporte técnico ni consola."""
 
         messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user",   "content": text}
         ]
+        if first_time_greeting:
+            messages.append({"role": "system", "content": first_time_greeting})
+        if is_who_are_you and not first_time_greeting:
+            messages.append({"role": "system", "content": f"Te están preguntando quién eres o qué haces. Responde como {agent_name}, recepcionista virtual de {clinic.get('name', 'este negocio')}. Natural, cálida, una frase. No des lista de funciones."})
+        messages.append({"role": "user",   "content": text})
 
         raw, _ = await llm_engine.complete(
             messages,
@@ -20994,12 +19682,20 @@ No hables como dashboard, soporte técnico ni consola."""
 
         # ── BLOCKER 4: Commands run BEFORE anything else ─────────────────────────
         if text.strip().startswith("/"):
-            result = self._handle_command(chat_id, text.strip(), route)
+            result = await self._handle_command(chat_id, text.strip(), route)
             if result:
+                await self._send_bubbles(chat_id, result, message_id="", route=route)
                 return
             else:
                 await self._send_message(chat_id, "Comando no reconocido. Escribe /help para ver los disponibles.")
                 return
+
+        # ── MODO SIMULACIÓN ──────────────────────────────────────────────────
+        if self.simulator and self.simulator.is_simulating(chat_id):
+            bubbles = await self.simulator.handle_step(chat_id, text)
+            if bubbles:
+                await self._send_bubbles(chat_id, bubbles, message_id=message_id, route=route)
+            return
 
         route = self._resolve_route(chat_id, route)
         platform = _route_platform(route)
@@ -21096,10 +19792,13 @@ No hables como dashboard, soporte técnico ni consola."""
 
         try:
             bubbles = await self.process_message(chat_id, combined, attachments=attachments, route=route)
-            await self._send_bubbles(chat_id, bubbles, message_id=message_id, route=route)
+            if bubbles:
+                await self._send_bubbles(chat_id, bubbles, message_id=message_id, route=route)
         except Exception as e:
-            log.error(f"Flush error: {e}", exc_info=True)
-            await self._send_message(chat_id, "ya regreso, un segundito", route=route)
+            log.error(f"Flush error for {chat_id}: {e}", exc_info=True)
+            # No enviamos nada aquí, dejamos que process_message maneje el error interno
+            # Si llegó aquí es porque algo falló MUY feo fuera del try de process_message
+            await self._send_message(chat_id, "Lo siento, tuve un error técnico inesperado. ¿Podrías repetir?", route=route)
     
     async def _send_bubbles(
         self,
@@ -21363,180 +20062,10 @@ No hables como dashboard, soporte técnico ni consola."""
     
     async def transcribe_audio(self, file_id: str, platform: str = "telegram",
                                wa_media_id: str = None) -> str:
-        """
-        Transcribe audio con Gemini 2.0 Flash (nativo) → fallback Whisper.
-        Gemini no solo transcribe — entiende contexto y tono coloquial.
-        """
-        import base64
-        audio_bytes, mime_type = None, "audio/ogg"
-        def _audio_suffix(mime: str) -> str:
-            mapping = {
-                "audio/ogg": ".ogg",
-                "audio/oga": ".ogg",
-                "audio/opus": ".ogg",
-                "audio/mp3": ".mp3",
-                "audio/mpeg": ".mp3",
-                "audio/wav": ".wav",
-                "audio/x-wav": ".wav",
-                "audio/mp4": ".m4a",
-                "audio/x-m4a": ".m4a",
-                "audio/webm": ".webm",
-            }
-            return mapping.get((mime or "").lower(), ".ogg")
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                if platform == "telegram":
-                    r  = await client.get(
-                        f"https://api.telegram.org/bot{Config.TELEGRAM_TOKEN}/getFile",
-                        params={"file_id": file_id})
-                    fp = r.json()["result"]["file_path"]
-                    ext = fp.rsplit(".",1)[-1].lower() if "." in fp else "ogg"
-                    mime_type = {"ogg":"audio/ogg","mp3":"audio/mp3","wav":"audio/wav",
-                                 "m4a":"audio/mp4","oga":"audio/ogg","opus":"audio/ogg"}.get(ext,"audio/ogg")
-                    ar = await client.get(f"https://api.telegram.org/file/bot{Config.TELEGRAM_TOKEN}/{fp}")
-                    audio_bytes = ar.content
-                elif platform == "whatsapp_cloud" and wa_media_id:
-                    mr  = await client.get(f"https://graph.facebook.com/v20.0/{wa_media_id}",
-                                           headers={"Authorization": f"Bearer {Config.WA_ACCESS_TOKEN}"})
-                    url = mr.json().get("url","")
-                    if url:
-                        dl = await client.get(url, headers={"Authorization": f"Bearer {Config.WA_ACCESS_TOKEN}"})
-                        audio_bytes, mime_type = dl.content, mr.json().get("mime_type","audio/ogg")
-
-            # ── WhatsApp Bridge (Baileys) — audio base64 inline ───────────────
-            if platform == "whatsapp" and file_id.startswith("wa_b64:"):
-                try:
-                    _, mime_part, b64_data = file_id.split(":", 2)
-                    mime_type   = mime_part or "audio/ogg"
-                    audio_bytes = base64.b64decode(b64_data)
-                except Exception:
-                    return "[no pude escuchar, puedes escribirlo?]"
-
-            if not audio_bytes:
-                return "[no pude escuchar, puedes escribirlo?]"
-
-            # ── Gemini 2.0 Flash — comprensión nativa de audio ────────────────
-            # Rota entre las 3 keys disponibles
-            effective_mime = "audio/ogg" if mime_type in ("audio/oga","audio/opus") else mime_type
-            gemini_keys = Config.GEMINI_API_KEYS or [
-                k for k in [
-                    Config.GEMINI_API_KEY,
-                    Config.GEMINI_API_KEY_2,
-                    Config.GEMINI_API_KEY_3,
-                    Config.GEMINI_API_KEY_4,
-                    Config.GEMINI_API_KEY_5,
-                    Config.GEMINI_API_KEY_6,
-                ] if k
-            ]
-            for gkey in gemini_keys:
-                try:
-                    b64 = base64.b64encode(audio_bytes).decode()
-                    payload = {
-                        "contents": [{"parts": [
-                            {"inline_data": {"mime_type": effective_mime, "data": b64}},
-                            {"text": "Transcribe este mensaje de voz en español exactamente como se dice. Devuelve SOLO el texto transcrito, sin comillas ni comentarios. Mantén el tono coloquial tal como se habla."}
-                        ]}],
-                        "generationConfig": {"temperature": 0.0, "maxOutputTokens": 500}
-                    }
-                    async with httpx.AsyncClient(timeout=25.0) as client:
-                        resp = await client.post(
-                            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gkey}",
-                            json=payload)
-                    if resp.status_code == 200:
-                        parts = resp.json().get("candidates",[{}])[0].get("content",{}).get("parts",[{}])
-                        t = parts[0].get("text","").strip() if parts else ""
-                        if t and len(t) > 2:
-                            log.info(f"[audio] Gemini OK: {t[:80]}")
-                            return t
-                    elif resp.status_code in (408, 429, 500, 502, 503, 504):
-                        continue  # rotar key
-                    else:
-                        log.warning(f"[audio] Gemini {resp.status_code}: {resp.text[:120]}")
-                        continue
-                except Exception as eg:
-                    log.warning(f"[audio] Gemini error: {eg}")
-                    continue
-
-            # ── Fallback 1: Groq Whisper (soporta OGG/WEBM de forma nativa) ───
-            if Config.GROQ_API_KEY:
-                tmp_path = None
-                try:
-                    suffix = _audio_suffix(effective_mime)
-                    filename = f"audio{suffix}"
-                    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-                        tmp.write(audio_bytes)
-                        tmp_path = tmp.name
-                    async with httpx.AsyncClient(timeout=60.0) as client:
-                        with open(tmp_path, "rb") as f:
-                            resp = await client.post(
-                                "https://api.groq.com/openai/v1/audio/transcriptions",
-                                headers={"Authorization": f"Bearer {Config.GROQ_API_KEY}"},
-                                files={"file": (filename, f, effective_mime)},
-                                data={
-                                    "model": "whisper-large-v3-turbo",
-                                    "language": "es",
-                                    "response_format": "json",
-                                    "temperature": "0",
-                                    "prompt": "Transcribe este audio en español tal como se dice, sin comentarios adicionales.",
-                                },
-                            )
-                    if tmp_path and os.path.exists(tmp_path):
-                        os.unlink(tmp_path)
-                    if resp.status_code == 200:
-                        payload = resp.json()
-                        t = (payload.get("text") or "").strip()
-                        if t:
-                            log.info(f"[audio] Groq Whisper OK: {t[:80]}")
-                            return t
-                    else:
-                        log.warning(f"[audio] Groq Whisper {resp.status_code}: {resp.text[:160]}")
-                except Exception as eg:
-                    log.warning(f"[audio] Groq Whisper error: {eg}")
-                    if tmp_path and os.path.exists(tmp_path):
-                        try:
-                            os.unlink(tmp_path)
-                        except Exception:
-                            pass
-
-            # ── Fallback 2: OpenRouter Whisper ───────────────────────────────
-            if Config.OPENROUTER_API_KEY:
-                tmp_path = None
-                try:
-                    suffix = _audio_suffix(effective_mime)
-                    filename = f"audio{suffix}"
-                    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-                        tmp.write(audio_bytes); tmp_path = tmp.name
-                    async with httpx.AsyncClient(timeout=60.0) as client:
-                        with open(tmp_path,"rb") as f:
-                            resp = await client.post(
-                                "https://openrouter.ai/api/v1/audio/transcriptions",
-                                headers={"Authorization": f"Bearer {Config.OPENROUTER_API_KEY}"},
-                                files={"file": (filename, f, effective_mime)},
-                                data={
-                                    "model": getattr(Config,"WHISPER_MODEL","openai/whisper-large-v3"),
-                                    "language": "es",
-                                })
-                    if tmp_path and os.path.exists(tmp_path):
-                        os.unlink(tmp_path)
-                    if resp.status_code == 200:
-                        t = resp.json().get("text","").strip()
-                        if t:
-                            log.info(f"[audio] Whisper OK: {t[:80]}")
-                            return t
-                    else:
-                        log.warning(f"[audio] OpenRouter Whisper {resp.status_code}: {resp.text[:160]}")
-                except Exception as ew:
-                    log.warning(f"[audio] Whisper error: {ew}")
-                    if tmp_path and os.path.exists(tmp_path):
-                        try:
-                            os.unlink(tmp_path)
-                        except Exception:
-                            pass
-
-            return "[no se pudo transcribir el audio]"
-        except Exception as e:
-            log.error(f"[audio] Error: {e}", exc_info=True)
-            return "[no pude escuchar, puedes escribirlo?]"
+        """Delega transcripción a AudioHandler si está disponible."""
+        if _AUDIO_HANDLER_AVAILABLE and hasattr(self, "_audio_handler"):
+            return await self._audio_handler.transcribe_audio(file_id, platform, wa_media_id)
+        return "[no pude escuchar, puedes escribirlo?]"
     
     def is_urgent(self, text: str) -> bool:
         """Detecta si el mensaje es urgente."""
@@ -21662,8 +20191,19 @@ async def lifespan(app: FastAPI):
         log.info("Evolution API mode — configura el webhook en tu panel de Evolution")
         log.info(f"URL del webhook: {Config.BASE_URL}/webhook/{Config.WEBHOOK_SECRET}")
     
+    # ── Memory Engine + Cron Scheduler + Uncertainty ────────────────────────────
+    try:
+        from melissa_memory_engine import memory_engine as _mem_engine
+        from melissa_cron import init_scheduler as _init_cron
+        from melissa_uncertainty import uncertainty_detector as _unc_detector
+        instance_id = Config.INSTANCE_ID if hasattr(Config, "INSTANCE_ID") else "default"
+        _init_cron(memory_engine=_mem_engine, instance_ids=[instance_id])
+        log.info(f"[startup] memory_engine + cron + uncertainty OK (instance={instance_id})")
+    except Exception as _mem_err:
+        log.warning(f"[startup] memory/cron init error: {_mem_err}")
+
     log.info("═══════════════════════════════════════════════════════")
-    log.info("       MELISSA V8.0 - ONLINE Y OPERATIVA         ")
+    log.info("       MELISSA V9.0 - ONLINE Y OPERATIVA         ")
     log.info("═══════════════════════════════════════════════════════")
 
     # Notificar a Omni que esta instancia está online
@@ -21677,13 +20217,18 @@ async def lifespan(app: FastAPI):
     # Shutdown
     if task_manager:
         await task_manager.stop()
+    try:
+        from melissa_cron import shutdown_scheduler
+        shutdown_scheduler()
+    except Exception:
+        pass
     notify_omni("instance_offline", f"Melissa apagada — sector: {Config.SECTOR or 'otro'}")
     log.info("Melissa Ultra apagada")
 
 app = FastAPI(
-    title="Melissa v8.0",
-    description="Melissa V8.0 — Agente de Recepción Hipernaturalmente Humana",
-    version="8.2.0",
+    title="Melissa v9.0",
+    description="Melissa V9.0 — Agente de Recepción Hipernaturalmente Humana",
+    version="9.0.0",
     lifespan=lifespan
 )
 
@@ -21695,6 +20240,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ─── Admin API Router ────────────────────────────────────────────────────────────
+try:
+    from melissa_admin_api import router as admin_api_router
+    app.include_router(admin_api_router)
+    log.info("[admin_api] router montado en /admin")
+except Exception as _admin_api_err:
+    log.warning(f"[admin_api] no disponible: {_admin_api_err}")
 
 # ─── Webhook Setup ──────────────────────────────────────────────────────────────
 
@@ -26463,9 +25016,8 @@ MelissaUltra._admin_appt_status    = _admin_appt_status
 
 
 # Patch del dispatcher de comandos para incluir los nuevos comandos
-_original_handle_admin = MelissaUltra._handle_admin_or_setup.__wrapped__ \
-    if hasattr(MelissaUltra._handle_admin_or_setup, "__wrapped__") \
-    else None
+_orig_attr = getattr(MelissaUltra, "_handle_admin_or_setup", None)
+_original_handle_admin = _orig_attr.__wrapped__ if (_orig_attr and hasattr(_orig_attr, "__wrapped__")) else None
 
 
 def _patch_admin_dispatcher():
@@ -26473,7 +25025,8 @@ def _patch_admin_dispatcher():
     Extiende _handle_admin_or_setup con los nuevos comandos V8 Extended.
     Se ejecuta después de que melissa esté inicializado.
     """
-    original_method = MelissaUltra._handle_admin_or_setup
+    orig_get = getattr(MelissaUltra, "_handle_admin_or_setup", None)
+    original_method = orig_get if orig_get else None
 
     async def patched_handle_admin(self, chat_id: str, text: str, clinic: Dict) -> List[str]:
         cmd = text.lower().strip()
@@ -26500,9 +25053,11 @@ def _patch_admin_dispatcher():
             ]
 
         # Delegar al método original para todo lo demás
-        return await original_method(self, chat_id, text, clinic)
+        if original_method:
+            return await original_method(self, chat_id, text, clinic)
+        return ["Admin no disponible."]
 
-    MelissaUltra._handle_admin_or_setup = patched_handle_admin
+    setattr(MelissaUltra, "_handle_admin_or_setup", patched_handle_admin)
     log.info("[v8_extended] dispatcher admin patcheado con nuevos comandos")
 
 
@@ -30102,7 +28657,8 @@ def _patch_admin_dispatcher_trainer():
     Extiende el dispatcher admin con los comandos del trainer.
     Se llama después de _patch_admin_dispatcher() del V8 extended.
     """
-    original_method = MelissaUltra._handle_admin_or_setup
+    orig_get = getattr(MelissaUltra, "_handle_admin_or_setup", None)
+    original_method = orig_get if orig_get else None
 
     async def patched_with_trainer(self, chat_id: str, text: str, clinic: Dict) -> List[str]:
         cmd      = text.lower().strip()
@@ -30125,15 +28681,18 @@ def _patch_admin_dispatcher_trainer():
             if _handoff_cmd_result is not None:
                 return _handoff_cmd_result
 
-            _was_intercepted, _intercept_msgs = await handoff_manager.try_intercept_admin_reply(
-                admin_chat_id=chat_id,
-                admin_text=text,
-                clinic=clinic,
-                llm_fn=_llm,
-                send_to_client_fn=_handoff_send_to_client,
-            )
-            if _was_intercepted:
-                return _intercept_msgs
+            try:
+                _was_intercepted, _intercept_msgs = await handoff_manager.try_intercept_admin_reply(
+                    admin_chat_id=chat_id,
+                    admin_text=text,
+                    clinic=clinic,
+                    llm_fn=llm_engine.complete,
+                    send_to_client_fn=_handoff_send_to_client,
+                )
+                if _was_intercepted:
+                    return _intercept_msgs
+            except Exception as _h_e:
+                log.warning(f"[trainer] handoff try_intercept error: {_h_e}")
 
         # ── Modo cliente activo — el admin está simulando ser cliente ──────────
         # Si está en modo cliente, procesar su mensaje como cliente real
@@ -30279,8 +28838,9 @@ def _patch_admin_dispatcher_trainer():
                 "  6. /reglas — ver la regla que aprendió",
             ]
 
-        # Delegar al método original para todo lo demás
-        return await original_method(self, chat_id, text, clinic)
+        if original_method:
+            return await original_method(self, chat_id, text, clinic)
+        return ["Admin no disponible."]
 
     MelissaUltra._handle_admin_or_setup = patched_with_trainer
     log.info("[trainer] dispatcher admin patcheado con comandos trainer")

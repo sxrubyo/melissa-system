@@ -76,78 +76,51 @@ def build_compact_system_prompt(
     patient_name = (patient.get("name") or "").strip()
     visits = patient.get("visits", 0)
     is_new = patient.get("is_new", True)
-    last_service = (patient.get("last_service") or "").strip()
     agent_name = (getattr(personality, "name", "") or "Melissa").strip()
-    user_turns = len([m for m in history if m.get("role") == "user"])
     is_first_turn = not any(m.get("role") == "assistant" for m in history)
 
     service_line = ", ".join(str(service).strip() for service in services[:6] if str(service).strip())
     schedule_line = "; ".join(f"{day}: {hours}" for day, hours in list(schedule.items())[:4]) if schedule else ""
     pricing_line = ", ".join(f"{name}: {value}" for name, value in list(pricing.items())[:5]) if pricing else ""
 
-    if not is_new and patient_name:
-        cliente_hint = f"Ya conoces a {patient_name} ({visits} mensajes previos)."
-        if last_service:
-            cliente_hint += f" Ultima vez: {last_service}."
-    elif not is_new:
-        cliente_hint = f"Cliente recurrente, {visits} mensajes previos."
-    else:
-        cliente_hint = ""
+    # Mandatos de Humanidad (Core v11)
+    human_mandates = [
+        "NUNCA uses frases de call center ('con gusto', 'un placer').",
+        "Escribe corto, como una persona real por WhatsApp.",
+        "Usa ||| para separar ideas en mensajes distintos.",
+        "Si no sabes algo, di 'déjame preguntarle al doctor y te aviso'."
+    ]
 
     tone_block = truncate_block(getattr(personality, "tone_instruction", "") or "", 360)
-    trust_lines: List[str] = []
-    playbook_lines: List[str] = []
-    core_memory = ""
-
-    if deps.db:
-        try:
-            core_memory = truncate_block(deps.db.get_core_memory_block(), 480)
-        except Exception:
-            core_memory = ""
-        try:
-            for rule in deps.db.get_trust_rules(limit=4):
-                rule_text = (rule.get("rule") or "").strip()
-                example_good = (rule.get("example_good") or "").strip()
-                if rule_text:
-                    line = f"- {rule_text}"
-                    if example_good:
-                        line += f' Ejemplo: "{example_good}"'
-                    trust_lines.append(truncate_block(line, 180))
-        except Exception:
-            trust_lines = []
-        try:
-            for playbook in deps.db.get_behavior_playbooks(limit=3):
-                trigger = (playbook.get("trigger_text") or "").strip()
-                example = (playbook.get("response_example") or "").strip()
-                if trigger and example:
-                    line = f'- Si pasa "{trigger}", responde con un ritmo parecido a "{example}"'
-                    playbook_lines.append(truncate_block(line, 220))
-        except Exception:
-            playbook_lines = []
-
-    compact_examples = build_compact_examples(deps.build_fewshot_examples(sector_id, clinic_name, agent_name))
     kb_block = truncate_block(kb_context, 850)
-    web_block = truncate_block(search_context, 450)
     strategy = truncate_block(reasoning.get("response_strategy", ""), 220)
-    context_summary = truncate_block(context_summary, 500)
     pre_prompt_injection = truncate_block(pre_prompt_injection, 550)
 
-    negocio_lines = [f"Trabajas para {clinic_name}"]
-    if tagline:
-        negocio_lines.append(f"({tagline})")
-    if city and city != "Colombia":
-        negocio_lines.append(f"en {city}")
-    if service_line:
-        negocio_lines.append(f"- {sector_emoji} {sector_name}: {service_line}")
-    if schedule_line:
-        negocio_lines.append(f"Horario: {schedule_line}.")
-    if phone:
-        negocio_lines.append(f"Tel: {phone}.")
-    if address:
-        negocio_lines.append(f"Direccion: {address}.")
-    if pricing_line:
-        negocio_lines.append(f"Precios: {pricing_line}.")
+    negocio_lines = [f"Eres {agent_name}, recepcionista real en {clinic_name}"]
+    if tagline: negocio_lines.append(f"({tagline})")
+    if service_line: negocio_lines.append(f"- {sector_emoji} {sector_name}: {service_line}")
+    if pricing_line: negocio_lines.append(f"Precios: {pricing_line}.")
     negocio_bloque = " ".join(negocio_lines)
+
+    prompt = f"""{negocio_bloque}
+
+## TU PERSONALIDAD:
+{tone_block or "Amigable y directa."}
+
+## REGLAS DE ORO:
+{chr(10).join(f"- {m}" for m in human_mandates)}
+
+## ESTRATEGIA ACTUAL:
+{strategy}
+
+## DATOS DE APOYO:
+{kb_block}
+
+## INSTRUCCIONES EXTRA:
+{pre_prompt_injection}
+
+Responde ahora, sé breve y humana."""
+    return prompt
 
     owner_hint = ""
     if trust_lines:
