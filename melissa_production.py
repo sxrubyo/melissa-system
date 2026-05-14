@@ -69,12 +69,15 @@ TONO: {tone_instruction}
 
 {f"CONOCIMIENTO DEL NEGOCIO:{chr(10)}{soul_context}" if soul_context else ""}
 
-REGLAS:
+REGLA #1 — NUNCA INVENTAR INFORMACIÓN:
+- Si NO tienes el dato exacto (precio, horario, disponibilidad), responde: "permítame verificar eso, ya le confirmo"
+- NUNCA inventes horarios, precios ni disponibilidad. Prefiere decir "le confirmo" a inventar.
+- Si el dato no está en tu CONOCIMIENTO DEL NEGOCIO ni en tus ENSEÑANZAS, NO lo tienes.
+
+REGLAS GENERALES:
 - {tone_instruction.split(':')[0]} — aplica este tono en CADA respuesta
 - Una sola pregunta por turno, enfocada en avanzar la conversación
 - Si el paciente quiere cita: pide nombre, servicio, fecha preferida
-- Si preguntan precio y NO lo sabes: "permítame verificar eso para usted" (NO inventar)
-- Si no sabes algo: "déjame verificar eso y te confirmo"
 - NUNCA digas "como IA", "no tengo capacidad", "asistente virtual"
 - Usa máximo 2-3 burbujas separadas por |||
 - Sé concisa (máx 40 palabras por burbuja)"""
@@ -98,12 +101,23 @@ REGLAS:
         # Teachings injection
         try:
             from melissa_learning import learning_engine
-            teachings = await learning_engine.get_teachings(
-                getattr(self.melissa, "_instance_id", "default"), limit=20
-            )
+            teachings = await learning_engine.get_teachings(instance_id, limit=20)
             if teachings:
                 teachings_text = learning_engine.build_teachings_prompt(teachings)
                 messages[0]["content"] += f"\n\n{teachings_text}"
+        except Exception:
+            pass
+
+        # Admin rules injection (things admin said to ask first)
+        try:
+            from pathlib import Path
+            rules_file = Path(f"soul/{instance_id}/admin_rules.json")
+            if rules_file.exists():
+                import json as _j
+                rules = _j.loads(rules_file.read_text())
+                if rules:
+                    rules_text = "\n".join(f"- Si preguntan sobre '{r['topic']}': {r['action']}" for r in rules[-10:])
+                    messages[0]["content"] += f"\n\nINSTRUCCIONES DEL DUEÑO:\n{rules_text}"
         except Exception:
             pass
 
@@ -126,32 +140,37 @@ REGLAS:
 
         response = v8_process_response(response, chat_id=chat_id)
 
-        # Uncertainty check + admin alert
+        # Uncertainty check + admin escalation
         try:
             from melissa_uncertainty import uncertainty_detector
             confidence = uncertainty_detector.confidence_score(response, text, history)
-            if confidence < 0.5:
+
+            # Get admin JID for alerts
+            admin_ids = clinic.get("admin_chat_ids", [])
+            if isinstance(admin_ids, str):
+                import json as _j
+                admin_ids = _j.loads(admin_ids) if admin_ids else []
+            admin_jid = str(admin_ids[0]) if admin_ids else ""
+
+            if confidence < 0.5 and admin_jid:
                 await uncertainty_detector.log_gap(instance_id, text, response, confidence, chat_id)
-                # Alert admin via WhatsApp
-                admin_ids = clinic.get("admin_chat_ids", [])
-                if isinstance(admin_ids, str):
-                    import json as _j
-                    admin_ids = _j.loads(admin_ids) if admin_ids else []
-                if admin_ids:
-                    admin_jid = str(admin_ids[0])
-                    alert_msg = (
-                        f"⚠️ Melissa no supo responder bien:\n"
-                        f"Paciente preguntó: \"{text[:150]}\"\n"
-                        f"Yo respondí: \"{response[:150]}\"\n"
-                        f"Confianza: {confidence:.0%}\n\n"
-                        f"Si me enseñas la respuesta correcta, la aprendo de una.\n"
-                        f"Escribe: /aprender {text[:50]} → [respuesta correcta]"
-                    )
-                    try:
-                        await self.melissa._send_message(admin_jid, alert_msg)
-                        log.info(f"[production] admin alerted: confidence={confidence:.2f}")
-                    except Exception:
-                        pass
+                alert_msg = (
+                    f"⚠️ Un paciente preguntó algo que no supe responder:\n\n"
+                    f"*Pregunta:* \"{text[:200]}\"\n"
+                    f"*Yo respondí:* \"{response[:150]}\"\n"
+                    f"*Confianza:* {confidence:.0%}\n\n"
+                    f"Si me das la respuesta correcta, la aprendo y la próxima vez la respondo sola.\n"
+                    f"Escribe: /aprender {text[:80]} → [respuesta correcta]"
+                )
+                try:
+                    await self.melissa._send_message(admin_jid, alert_msg)
+                    log.info(f"[production] admin alerted: confidence={confidence:.2f} question='{text[:50]}'")
+                except Exception as e:
+                    log.warning(f"[production] failed to alert admin: {e}")
+
+                # Override response: tell patient we're checking
+                response = "dame un momento que verifico eso ||| ya te confirmo"
+
         except Exception as e:
             log.error(f"[production] uncertainty check FAILED: {e}", exc_info=True)
 

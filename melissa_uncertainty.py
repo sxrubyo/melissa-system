@@ -101,7 +101,14 @@ class UncertaintyDetector:
         if any(d in text_low for d in service_denial):
             score -= 0.3  # She might be wrong — she doesn't actually know the full service list
 
-        # === NEW: Detect "depende" evasion ===
+        # === Detect INFO evasion (horarios, disponibilidad, etc) ===
+        info_signals = ["horario", "atienden", "abren", "cierran", "disponibilidad", "abierto", "cuando"]
+        user_asked_info = any(s in user_low for s in info_signals)
+        response_deflects = any(d in text_low for d in ["verificar", "confirmo", "consultar", "le confirmo"])
+        if user_asked_info and response_deflects:
+            score -= 0.55  # She doesn't know the schedule — must alert admin
+
+        # === Detect "depende" evasion ===
         vague_deflectors = [
             "depende del servicio", "depende de la valoración", "depende del caso",
             "te confirmo", "déjame verificar", "let me check",

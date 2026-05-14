@@ -217,6 +217,30 @@ EJEMPLO MALO:
         """Extraer conocimiento y APLICAR cambios de personalidad en tiempo real."""
         text_low = admin_text.lower()
 
+        # ── Detectar REGLAS del admin ("si preguntan X, pregúntame") ──
+        rule_signals = [
+            "si preguntan", "si alguien pregunta", "cuando pregunten",
+            "si te preguntan", "me mandas mensaje", "me avisas",
+            "pregúntame primero", "consultame primero", "no respondas sin",
+            "a partir de ahora", "desde ahora", "de ahora en adelante",
+        ]
+        if any(signal in text_low for signal in rule_signals):
+            try:
+                rules_file = Path(f"soul/{instance_id}/admin_rules.json")
+                rules_file.parent.mkdir(parents=True, exist_ok=True)
+                rules = json.loads(rules_file.read_text()) if rules_file.exists() else []
+                rules.append({
+                    "topic": admin_text[:200],
+                    "action": "consultar al admin antes de responder",
+                    "created": datetime.now().isoformat(),
+                    "admin_id": chat_id,
+                })
+                rules_file.write_text(json.dumps(rules, ensure_ascii=False, indent=2))
+                self._append_soul(instance_id, f"[REGLA ADMIN] {admin_text[:200]}")
+                log.info(f"[admin] new rule saved: {admin_text[:60]}")
+            except Exception as e:
+                log.debug(f"[admin] rule save error: {e}")
+
         # ── Detectar cambios de PERSONALIDAD y aplicarlos persistentemente ──
         personality_signals = [
             "modo luxury", "modo formal", "modo informal", "modo casual",
@@ -340,12 +364,24 @@ EJEMPLO MALO:
 
             if text_content.strip():
                 extracted_parts.append(f"[{filename}]\n{text_content.strip()}")
-                self._append_soul(instance_id, f"[archivo: {filename}]\n{text_content[:1000]}")
                 log.info(f"[admin] processed attachment: {filename} ({len(text_content)} chars)")
 
                 # Auto-configure Google credentials if detected
-                if "client_id" in text_content and "client_secret" in text_content:
+                is_credential_file = "client_id" in text_content and "client_secret" in text_content
+                is_secret = "private_key" in text_content or "api_key" in text_content.lower()
+
+                if is_credential_file:
                     await self._auto_configure_google(text_content, instance_id)
+                    self._append_soul(instance_id, f"[archivo: {filename}] Credenciales de Google recibidas y configuradas.")
+                elif is_secret:
+                    # NEVER save secrets/keys to soul — only to vault
+                    creds_dir = Path(f"integrations/vault/{instance_id}")
+                    creds_dir.mkdir(parents=True, exist_ok=True)
+                    (creds_dir / filename).write_text(text_content)
+                    self._append_soul(instance_id, f"[archivo: {filename}] API key/credencial guardada en vault (no expuesta).")
+                else:
+                    # Normal knowledge file — safe to save to soul
+                    self._append_soul(instance_id, f"[archivo: {filename}]\n{text_content[:1000]}")
 
         return "\n\n".join(extracted_parts) if extracted_parts else ""
 
