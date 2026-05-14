@@ -37,9 +37,9 @@ LOGO_FULL = """\
   ╚═╝     ╚═╝╚══════╝╚══════╝╚═╝╚══════╝╚══════╝╚═╝  ╚═╝[/m]"""
 
 LOGO_SMALL = """\
-[m]    ╔╦╗╔═╗╦  ╦╔═╗╔═╗╔═╗
-    ║║║║╣ ║  ║╚═╗╚═╗╠═╣
-    ╩ ╩╚═╝╩═╝╩╚═╝╚═╝╩ ╩[/m]"""
+[m]     ╭──╮╭──╮[/m]
+[m]     │◉ ╰╯  │[/m]  [bold #b48ead]melissa[/bold #b48ead] [dim]v{v}[/dim]
+[m]     ╰──────╯[/m]""".format(v=VERSION)
 
 TAGLINES = [
     "AI receptionist for business",
@@ -55,7 +55,8 @@ TAGLINES = [
 def banner(big=False):
     con.print()
     con.print(LOGO_FULL if big else LOGO_SMALL)
-    con.print(f"    [dim]v{VERSION}[/dim]  [m.dim]— {random.choice(TAGLINES)}[/m.dim]")
+    if big:
+        con.print(f"    [dim]v{VERSION}[/dim]  [m.dim]— {random.choice(TAGLINES)}[/m.dim]")
     con.print()
     # Status
     procs = _pm2()
@@ -70,7 +71,7 @@ def banner(big=False):
 
 # ─── Help ────────────────────────────────────────────────────────────────────
 
-def cmd_help(args="", big=False):
+def cmd_help(args="", big=True):
     banner(big=big)
     sections = [
         ("CORE", [
@@ -193,7 +194,7 @@ CMDS = {
     "help":cmd_help,"--help":cmd_help,"-h":cmd_help,"?":cmd_help,
     "status":cmd_status,"s":cmd_status,
     "list":cmd_list,"l":cmd_list,
-    "new":cmd_new,"doctor":cmd_doctor,"d":cmd_doctor,"doc":cmd_doctor,
+    "new":cmd_new,"init":cmd_new,"doctor":cmd_doctor,"d":cmd_doctor,"doc":cmd_doctor,
     "chat":cmd_chat,"c":cmd_chat,"studio":cmd_chat,
     "persona":cmd_persona,"logs":cmd_logs,"demo":cmd_demo,
     "modelo":cmd_modelo,"sync":cmd_sync,"sincronizar":cmd_sync,
