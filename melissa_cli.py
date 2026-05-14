@@ -769,11 +769,9 @@ def progress_bar(current, total, width=30, label=""):
 def prompt(label, default="", secret=False):
     """Input con estilo."""
     d = f" [{default}]" if default else ""
-    sys.stdout.write(f"\n  {q(C.P2, '?')}  {q(C.W, label)}{q(C.G3, d)}  ")
-    sys.stdout.flush()
     try:
         import getpass
-        v = getpass.getpass("") if secret else input("")
+        v = getpass.getpass(f"\n  {q(C.P2, '▸')}  {label}{q(C.G3, d)}  ") if secret else input(f"\n  {q(C.P2, '▸')}  {label}{q(C.G3, d)}  ")
     except (EOFError, KeyboardInterrupt):
         print()
         return default
@@ -782,10 +780,8 @@ def prompt(label, default="", secret=False):
 def confirm(label, default=True):
     """Confirmación S/N."""
     d = "S/n" if default else "s/N"
-    sys.stdout.write(f"\n  {q(C.P2, '?')}  {q(C.W, label)} {q(C.G3, f'[{d}]')}  ")
-    sys.stdout.flush()
     try:
-        v = input("").strip().lower()
+        v = input(f"\n  {q(C.P2, '▸')}  {label} [{d}]  ").strip().lower()
     except (EOFError, KeyboardInterrupt):
         print()
         return default
