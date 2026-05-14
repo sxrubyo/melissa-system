@@ -22,6 +22,70 @@ class MelissaProduction:
 
         start_time = time.time()
         instance_id = getattr(self.melissa, "_instance_id", "default")
+
+        # Smart features: memory, language, sentiment, time
+        patient_context = ""
+        lang_instruction = ""
+        try:
+            from melissa_smart_features import (
+                CrossSessionMemory, SentimentTracker, LanguageDetector,
+                get_time_greeting, is_conversation_ending, get_natural_closing,
+            )
+            # Cross-session memory
+            mem = CrossSessionMemory(instance_id)
+            patient_data = mem.recall_patient(chat_id)
+            patient_context = mem.get_context_for_prompt(chat_id)
+
+            # Language detection
+            lang_det = LanguageDetector()
+            detected_lang = lang_det.detect(text)
+            lang_instruction = lang_det.get_language_instruction(detected_lang)
+
+            # Sentiment check → auto-escalate if frustrated
+            sentiment = SentimentTracker()
+            should_esc, esc_reason = sentiment.should_escalate(text, history)
+            if should_esc:
+                admin_ids = clinic.get("admin_chat_ids", [])
+                if isinstance(admin_ids, str):
+                    import json as _j2
+                    admin_ids = _j2.loads(admin_ids) if admin_ids else []
+                if admin_ids:
+                    try:
+                        await self.melissa._send_message(
+                            str(admin_ids[0]),
+                            f"ojo, un paciente suena {esc_reason.replace('_', ' ')}:\n\"{text[:150]}\""
+                        )
+                    except Exception:
+                        pass
+
+            # Conversation ending detection
+            if is_conversation_ending(text):
+                tone = "casual"
+                try:
+                    from pathlib import Path
+                    import json as _j3
+                    ov = Path(f"personas/{instance_id}/runtime_override.json")
+                    if ov.exists():
+                        tone = _j3.loads(ov.read_text()).get("tone", "casual")
+                except Exception:
+                    pass
+                closing = get_natural_closing(tone)
+                db.save_message(chat_id, "user", text)
+                db.save_message(chat_id, "assistant", closing)
+                # Save last topic to memory
+                if history:
+                    last_user_msgs = [m["content"] for m in history[-4:] if m.get("role") == "user"]
+                    topic = last_user_msgs[0][:50] if last_user_msgs else ""
+                    mem.remember_patient(chat_id, {"last_topic": topic})
+                return self.melissa._split_bubbles(closing, chat_id=chat_id)
+
+            # Time awareness for greeting
+            time_greeting = get_time_greeting()
+        except ImportError:
+            time_greeting = "hola"
+        except Exception:
+            time_greeting = "hola"
+
         clinic_name = clinic.get("name", "el negocio")
         services = clinic.get("services", [])
         if isinstance(services, str):
@@ -69,6 +133,9 @@ TONO: {tone_instruction}
 
 {f"CONOCIMIENTO DEL NEGOCIO:{chr(10)}{soul_context}" if soul_context else ""}
 
+{f"SOBRE ESTE PACIENTE:{chr(10)}{patient_context}" if patient_context else ""}
+{f"{chr(10)}{lang_instruction}" if lang_instruction else ""}
+
 REGLA #1 — RESPONDE CON LO QUE SABES:
 - Si la respuesta está en la sección "RESPUESTAS QUE YA SABES" → DALA DIRECTAMENTE sin dudar
 - Si NO encuentras la respuesta en ninguna sección → "me confirmo y te aviso"
@@ -82,9 +149,13 @@ REGLAS GENERALES:
 - NUNCA uses formato markdown (**, *, _, #, `)
 - Usa máximo 2-3 burbujas separadas por |||
 - Sé concisa (máx 40 palabras por burbuja)
-- Escribe como escribe una persona en WhatsApp: natural, sin puntuación perfecta
+- Escribe EXACTAMENTE como una persona de 28 años en WhatsApp: mensajes cortos, naturales
 - Puedes usar 1-2 emojis si el tono lo permite (nunca más de 2)
-- Si ya saluaste, no vuelvas a saludar en la misma conversación"""
+- Si ya saludaste, no vuelvas a saludar
+- NUNCA te presentes con "Soy Melissa tu recepcionista de X" — eso suena a bot
+- Si es el primer mensaje, saluda así: "{time_greeting}! hablas con Melissa 😊 ||| en qué te puedo ayudar?"
+- Separa SIEMPRE en 2-3 burbujas cortas (|||), nunca un solo bloque largo
+- NUNCA digas el nombre completo de la clínica en el saludo — el paciente ya sabe dónde escribió"""
 
         messages = [{"role": "system", "content": sys_prompt}]
         for m in history[-12:]:
@@ -243,6 +314,20 @@ REGLAS GENERALES:
         try:
             from melissa_learning import learning_engine
             await learning_engine.learn_from_turn(instance_id, text, response)
+        except Exception:
+            pass
+
+        # Save patient memory (name extraction, last topic, visit count)
+        try:
+            from melissa_smart_features import CrossSessionMemory
+            mem = CrossSessionMemory(instance_id)
+            import re as _re2
+            # Extract name if patient says it
+            name_match = _re2.search(r'(?:me llamo|soy|mi nombre es)\s+([A-ZÁÉÍÓÚ][a-záéíóú]+(?:\s+[A-ZÁÉÍÓÚ][a-záéíóú]+)?)', text)
+            patient_update = {"last_topic": text[:50]}
+            if name_match:
+                patient_update["name"] = name_match.group(1)
+            mem.remember_patient(chat_id, patient_update)
         except Exception:
             pass
 

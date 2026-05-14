@@ -28,7 +28,15 @@ def init_scheduler(memory_engine=None, instance_ids: list = None):
                 id=f"consolidation_{iid}",
                 replace_existing=True,
             )
-            log.info(f"[cron] weekly consolidation scheduled for {iid} (Sun 3am)")
+            # Weekly report every Monday at 9am
+            _scheduler.add_job(
+                _send_weekly_report,
+                CronTrigger(day_of_week="mon", hour=9, minute=0),
+                args=[iid],
+                id=f"weekly_report_{iid}",
+                replace_existing=True,
+            )
+            log.info(f"[cron] consolidation (Sun 3am) + weekly report (Mon 9am) scheduled for {iid}")
 
     _scheduler.start()
     log.info("[cron] scheduler started")
@@ -42,6 +50,17 @@ async def _run_consolidation(memory_engine, instance_id: str):
         log.info(f"[cron] consolidation complete: {instance_id}")
     except Exception as e:
         log.error(f"[cron] consolidation failed for {instance_id}: {e}")
+
+
+async def _send_weekly_report(instance_id: str):
+    """Send weekly report to admin."""
+    try:
+        from melissa_weekly_report import generate_weekly_report
+        report = await generate_weekly_report(instance_id)
+        log.info(f"[cron] weekly report generated for {instance_id}")
+        # TODO: wire send_fn when admin_jid is available in cron context
+    except Exception as e:
+        log.error(f"[cron] weekly report failed: {e}")
 
 
 def shutdown_scheduler():

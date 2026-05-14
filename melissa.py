@@ -4403,7 +4403,6 @@ class AntiRobotFilter:
     # o si el patrón está al comienzo/fin — NUNCA mid-sentence.
     FORBIDDEN_PATTERNS_L2 = [
         r"(?:la\s+)?asistente\s+virtual",
-        r"(?:la\s+)?recepcionista\s+virtual",
         r"¡(hola|buenas|bienvenid)!\s*¿en qué",
         r"^\s*¡",                                    # Apertura con ¡
         r"sería\s+(un\s+)?placer",
