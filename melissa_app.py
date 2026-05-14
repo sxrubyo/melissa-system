@@ -257,16 +257,13 @@ def first_run():
 def onboard():
     con.print()
     con.print(LOGO)
+    con.print(f"    [dim]v{VERSION}[/dim]  [m.dim]— {_tagline()}[/m.dim]")
     con.print()
-    con.print(Panel(
-        "[bold]Welcome to Melissa AI[/bold]\n\n"
-        "[text]The AI receptionist that sounds human.[/text]\n"
-        "[text]Responds WhatsApp, learns your business, books appointments.[/text]",
-        border_style="#b48ead", box=box.DOUBLE, padding=(1,2),
-    ))
+    con.print("    [bold]First time? Let's set up your instance.[/bold]")
+    con.print("    [dim]This takes about 2 minutes.[/dim]")
     con.print()
-    r = con.input("    [m]⬡[/m] setup first instance? [dim](y/n)[/dim] ")
-    if r.lower() in ("y","yes","s","si","sí",""):
+    r = con.input("    [m]⬡[/m] ready? [dim](y/n)[/dim] ")
+    if r.lower() in ("y", "yes", "s", "si", "sí", ""):
         con.print()
         do_new()
     Path(os.path.expanduser("~/.melissa")).mkdir(parents=True, exist_ok=True)
