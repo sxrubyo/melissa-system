@@ -23,10 +23,12 @@ class MelissaAdmin:
 
     async def handle(self, chat_id: str, text: str, clinic: Dict) -> List[str]:
         """Maneja modo admin o setup. Nunca lanza excepcion al exterior."""
-        from melissa import (
-            db, auth_engine, llm_engine, calendar_bridge, 
-            generate_activation_token, notify_omni, _KB_AVAILABLE, SECTORS
-        )
+        from melissa import db, auth_engine, llm_engine
+        try:
+            from melissa import calendar_bridge, _KB_AVAILABLE, SECTORS
+        except ImportError:
+            calendar_bridge = None; _KB_AVAILABLE = False; SECTORS = {}
+        def notify_omni(*a, **kw): pass
         from melissa_utils import _parse_admin_ids, extract_model_request_from_text
         
         learning_engine = self.melissa.admin_learning
