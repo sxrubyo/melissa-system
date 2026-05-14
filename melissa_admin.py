@@ -178,10 +178,34 @@ EJEMPLO MALO:
         return self.melissa._split_bubbles(response, chat_id=chat_id)
 
     async def _auto_learn(self, instance_id: str, admin_text: str, bot_response: str, chat_id: str):
-        """Extraer conocimiento de lo que el admin dice y guardarlo."""
+        """Extraer conocimiento y APLICAR cambios de personalidad en tiempo real."""
         text_low = admin_text.lower()
 
-        # Detectar si el admin está enseñando algo
+        # ── Detectar cambios de PERSONALIDAD y aplicarlos persistentemente ──
+        personality_signals = [
+            "modo luxury", "modo formal", "modo informal", "modo casual",
+            "modo profesional", "modo alegre", "modo serio", "modo cálido",
+            "personalidad", "cambia tu tono", "habla más", "sé más",
+            "no seas tan", "quiero que seas", "actúa como", "tono",
+            "luxury", "elegante", "sofisticada", "exclusiva",
+        ]
+        if any(signal in text_low for signal in personality_signals):
+            try:
+                detected_tone = self._detect_tone_from_text(text_low)
+                if detected_tone:
+                    override_path = Path(f"personas/{instance_id}/runtime_override.json")
+                    override_path.parent.mkdir(parents=True, exist_ok=True)
+                    existing = json.loads(override_path.read_text()) if override_path.exists() else {}
+                    existing["tone"] = detected_tone
+                    existing["updated_at"] = datetime.now().isoformat()
+                    existing["set_by"] = "admin_conversation"
+                    override_path.write_text(json.dumps(existing, ensure_ascii=False, indent=2))
+                    self._append_soul(instance_id, f"[PERSONALIDAD CAMBIADA] Tono: {detected_tone}. El admin pidió: {admin_text[:100]}")
+                    log.info(f"[admin] personality changed to: {detected_tone}")
+            except Exception as e:
+                log.debug(f"[admin] personality change error: {e}")
+
+        # ── Detectar enseñanzas (precios, servicios, reglas) ──
         teaching_signals = [
             "cuesta", "vale", "precio", "cobra", "$",
             "horario", "abrimos", "cerramos", "atendemos",
@@ -195,18 +219,39 @@ EJEMPLO MALO:
         if any(signal in text_low for signal in teaching_signals):
             try:
                 from melissa_learning import learning_engine
-                # Guardar como enseñanza del admin
                 await learning_engine.learn_from_admin(
                     instance_id,
                     question=f"[admin enseñó] {admin_text[:200]}",
                     answer=admin_text[:500],
                     admin_id=chat_id,
                 )
-
-                # También guardar en el alma
                 self._append_soul(instance_id, admin_text)
             except Exception as e:
                 log.debug(f"[admin] auto_learn error: {e}")
+
+    def _detect_tone_from_text(self, text_low: str) -> Optional[str]:
+        """Detect requested tone from admin message."""
+        tone_map = {
+            "luxury": "luxury",
+            "elegante": "luxury",
+            "sofisticada": "luxury",
+            "exclusiva": "luxury",
+            "formal": "formal",
+            "profesional": "formal",
+            "serio": "formal",
+            "informal": "casual",
+            "casual": "casual",
+            "relajada": "casual",
+            "parche": "casual",
+            "alegre": "warm_energetic",
+            "cálida": "colombian_warm",
+            "calida": "colombian_warm",
+            "colombiana": "colombian_warm",
+        }
+        for keyword, tone in tone_map.items():
+            if keyword in text_low:
+                return tone
+        return None
 
     def _get_recent_patients_summary(self, db, admin_chat_id: str) -> str:
         """Get summary of recent patient conversations (excluding admin)."""

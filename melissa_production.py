@@ -31,15 +31,49 @@ class MelissaProduction:
         if isinstance(schedule, dict):
             schedule = " | ".join(f"{k}: {v}" for k, v in schedule.items())
 
+        # Load persona override (tone changes from admin)
+        persona_tone = "colombian_warm"
+        try:
+            from pathlib import Path
+            import json as _json
+            override_path = Path(f"personas/{instance_id}/runtime_override.json")
+            if override_path.exists():
+                override = _json.loads(override_path.read_text())
+                persona_tone = override.get("tone", persona_tone)
+        except Exception:
+            pass
+
+        # Load soul knowledge
+        soul_context = ""
+        try:
+            soul_file = Path(f"soul/{instance_id}/knowledge.md")
+            if soul_file.exists():
+                soul_context = soul_file.read_text()[-2000:]
+        except Exception:
+            pass
+
+        tone_instructions = {
+            "luxury": "Tono LUXURY: sofisticada, elegante, exclusiva. Usa lenguaje premium. Nunca suenes informal ni uses jerga. Transmite exclusividad en cada palabra.",
+            "formal": "Tono FORMAL: profesional, respetuosa, precisa. Sin jerga. Usted en vez de tú.",
+            "casual": "Tono CASUAL: cercana, relajada, como amiga. Tutea. Usa expresiones naturales.",
+            "colombian_warm": "Tono COLOMBIANO CÁLIDO: cercana pero profesional, calidez natural, expresiones colombianas sutiles.",
+            "warm_energetic": "Tono ALEGRE: energética, positiva, con chispa. Emojis permitidos.",
+        }
+        tone_instruction = tone_instructions.get(persona_tone, tone_instructions["colombian_warm"])
+
         sys_prompt = f"""Eres Melissa, recepcionista virtual de {clinic_name}.
 Servicios: {services_str}
 Horario: {schedule or 'consultar'}
 
+TONO: {tone_instruction}
+
+{f"CONOCIMIENTO DEL NEGOCIO:{chr(10)}{soul_context}" if soul_context else ""}
+
 REGLAS:
-- Responde como recepcionista colombiana real: cálida, directa, útil
+- {tone_instruction.split(':')[0]} — aplica este tono en CADA respuesta
 - Una sola pregunta por turno, enfocada en avanzar la conversación
 - Si el paciente quiere cita: pide nombre, servicio, fecha preferida
-- Si preguntan precio: "depende del servicio, te ayudo a cotizar"
+- Si preguntan precio y NO lo sabes: "permítame verificar eso para usted" (NO inventar)
 - Si no sabes algo: "déjame verificar eso y te confirmo"
 - NUNCA digas "como IA", "no tengo capacidad", "asistente virtual"
 - Usa máximo 2-3 burbujas separadas por |||
