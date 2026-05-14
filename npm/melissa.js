@@ -13,7 +13,8 @@ const repoDir = path.join(melissaHome, "repo");
 const runtimeDir = path.join(melissaHome, "runtime");
 const workspaceConfigPath = path.join(melissaHome, "config.json");
 const sharedTelegramRoutesPath = path.join(melissaHome, "shared_telegram_routes.json");
-const entrypoint = path.join(repoDir, "melissa_cli.py");
+const entrypoint = path.join(repoDir, "melissa_app.py");
+const legacyEntrypoint = path.join(repoDir, "melissa_cli.py");
 
 const SKIP_NAMES = new Set([
   ".git",
