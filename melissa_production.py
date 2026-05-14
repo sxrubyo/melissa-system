@@ -91,12 +91,48 @@ REGLAS:
 
         response = v8_process_response(response, chat_id=chat_id)
 
+        # Uncertainty check + admin alert
+        try:
+            from melissa_uncertainty import uncertainty_detector
+            confidence = uncertainty_detector.confidence_score(response, text, history)
+            if confidence < 0.5:
+                await uncertainty_detector.log_gap(instance_id, text, response, confidence, chat_id)
+                # Alert admin via WhatsApp
+                admin_ids = clinic.get("admin_chat_ids", [])
+                if isinstance(admin_ids, str):
+                    import json as _j
+                    admin_ids = _j.loads(admin_ids) if admin_ids else []
+                if admin_ids:
+                    admin_jid = str(admin_ids[0])
+                    alert_msg = (
+                        f"⚠️ Melissa no supo responder bien:\n"
+                        f"Paciente preguntó: \"{text[:150]}\"\n"
+                        f"Yo respondí: \"{response[:150]}\"\n"
+                        f"Confianza: {confidence:.0%}\n\n"
+                        f"Si me enseñas la respuesta correcta, la aprendo de una.\n"
+                        f"Escribe: /aprender {text[:50]} → [respuesta correcta]"
+                    )
+                    try:
+                        await self.melissa._send_message(admin_jid, alert_msg)
+                        log.info(f"[production] admin alerted: confidence={confidence:.2f}")
+                    except Exception:
+                        pass
+        except Exception as e:
+            log.debug(f"[production] uncertainty check skipped: {e}")
+
         # Save to DB
         try:
             db.save_message(chat_id, "user", text)
             db.save_message(chat_id, "assistant", response.replace("|||", " "),
                            model=model_used,
                            latency=int((time.time() - start_time) * 1000))
+        except Exception:
+            pass
+
+        # Real-time learning from turn
+        try:
+            from melissa_learning import learning_engine
+            await learning_engine.learn_from_turn(instance_id, text, response)
         except Exception:
             pass
 
