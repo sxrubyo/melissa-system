@@ -23,13 +23,22 @@ class MelissaAdmin:
     def __init__(self, melissa):
         self.melissa = melissa
 
-    async def handle(self, chat_id: str, text: str, clinic: Dict) -> List[str]:
+    async def handle(self, chat_id: str, text: str, clinic: Dict,
+                    attachments: Optional[List[Dict]] = None) -> List[str]:
         """Conversación inteligente con el admin via LLM."""
         from melissa import db, llm_engine
         from melissa_utils import _parse_admin_ids
         from melissa_commands import get_command_handler
+        attachments = attachments or []
 
         try:
+            # Process attachments (docs, credentials, knowledge files)
+            doc_content = await self._process_admin_attachments(
+                attachments, chat_id, getattr(self.melissa, "_instance_id", "default")
+            )
+            if doc_content:
+                text = f"{text}\n\n[CONTENIDO DE ARCHIVOS ADJUNTOS]\n{doc_content}" if text.strip() else doc_content
+
             # Comandos slash primero
             if text.strip().startswith("/"):
                 cmd_handler = get_command_handler(getattr(self.melissa, "_instance_id", "default"))
@@ -72,6 +81,10 @@ class MelissaAdmin:
         # Cargar historial de pacientes recientes (para que admin sepa quién escribió)
         recent_patients_summary = self._get_recent_patients_summary(db, chat_id)
 
+        # Cargar alma/memoria del negocio
+        soul_context = self._load_soul(instance_id)
+        teachings_context = self._load_teachings(instance_id)
+
         # Auto-investigar si el admin pide o si Melissa necesita info
         web_research = ""
         research_triggers = ["investiga", "busca", "google", "averigua", "informate", "infórmate", "buscar"]
@@ -83,12 +96,9 @@ class MelissaAdmin:
                 web_research = await search_business(clinic_name)
                 if web_research:
                     self._append_soul(instance_id, f"[investigación web] {web_research[:500]}")
+                    soul_context = self._load_soul(instance_id)
             except Exception as e:
                 log.debug(f"[admin] web search failed: {e}")
-
-        # Cargar alma/memoria del negocio
-        soul_context = self._load_soul(instance_id)
-        teachings_context = self._load_teachings(instance_id)
 
         # Determinar nivel de conocimiento
         knowledge_level = self._assess_knowledge_level(soul_context, teachings_context, clinic)
@@ -252,6 +262,63 @@ EJEMPLO MALO:
             if keyword in text_low:
                 return tone
         return None
+
+    async def _process_admin_attachments(self, attachments: List[Dict], chat_id: str, instance_id: str) -> str:
+        """Process files sent by admin — extract text and learn from them."""
+        if not attachments:
+            return ""
+        import base64 as _b64
+        extracted_parts = []
+        for att in attachments:
+            kind = att.get("kind", "")
+            mime = att.get("mime_type", "")
+            filename = att.get("filename", "file")
+
+            # Get binary content
+            raw = att.get("bytes") or b""
+            if not raw and att.get("base64"):
+                raw = _b64.b64decode(att["base64"])
+            if not raw and att.get("file_id") and att.get("platform") == "telegram":
+                try:
+                    raw, _ = await self.melissa._download_telegram_binary(att["file_id"])
+                except Exception:
+                    pass
+            if not raw and att.get("media_id") and att.get("platform") == "whatsapp_cloud":
+                try:
+                    raw, _, _ = await self.melissa._download_whatsapp_cloud_binary(att["media_id"])
+                except Exception:
+                    pass
+
+            if not raw:
+                continue
+
+            # Extract text based on file type
+            text_content = ""
+            if "pdf" in mime or filename.endswith(".pdf"):
+                try:
+                    import pdfplumber, io
+                    with pdfplumber.open(io.BytesIO(raw)) as pdf:
+                        pages = [p.extract_text() or "" for p in pdf.pages[:20]]
+                        text_content = "\n".join(filter(None, pages))[:5000]
+                except Exception:
+                    text_content = raw.decode("utf-8", errors="ignore")[:5000]
+            elif "json" in mime or filename.endswith(".json"):
+                text_content = raw.decode("utf-8", errors="ignore")[:5000]
+            elif "text" in mime or filename.endswith((".txt", ".md", ".csv")):
+                text_content = raw.decode("utf-8", errors="ignore")[:5000]
+            else:
+                try:
+                    text_content = raw.decode("utf-8", errors="ignore")[:3000]
+                except Exception:
+                    continue
+
+            if text_content.strip():
+                extracted_parts.append(f"[{filename}]\n{text_content.strip()}")
+                # Save to soul
+                self._append_soul(instance_id, f"[archivo: {filename}]\n{text_content[:1000]}")
+                log.info(f"[admin] processed attachment: {filename} ({len(text_content)} chars)")
+
+        return "\n\n".join(extracted_parts) if extracted_parts else ""
 
     def _get_recent_patients_summary(self, db, admin_chat_id: str) -> str:
         """Get summary of recent patient conversations (excluding admin)."""

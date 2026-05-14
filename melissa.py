@@ -12449,7 +12449,7 @@ class MelissaUltra:
 
             # 3. Admins / Setup
             if not clinic.get("setup_done") or effective_is_admin:
-                return await self.admin_mgr.handle(chat_id, text, clinic)
+                return await self.admin_mgr.handle(chat_id, text, clinic, attachments=attachments)
 
             # 4. PACIENTES (Producción)
             history = db.get_history(chat_id)
