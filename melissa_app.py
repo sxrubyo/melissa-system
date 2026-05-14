@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""melissa_app.py — Professional interactive CLI (opencode-style TUI)."""
+"""melissa — Professional CLI for Melissa AI."""
 from __future__ import annotations
 
 import os
@@ -8,451 +8,381 @@ import time
 import shutil
 import signal
 import threading
+import subprocess
+import json
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 
-# ─── Terminal utilities ────────────────────────────────────────────────────────
+# ─── Terminal ─────────────────────────────────────────────────────────────────
 
-TERM_WIDTH = shutil.get_terminal_size((80, 24)).columns
+TERM_W = shutil.get_terminal_size((80, 24)).columns
+IS_TTY = sys.stdout.isatty()
 
-def _ansi(code: str) -> str:
-    return f"\033[{code}m" if sys.stdout.isatty() else ""
+def _c(code): return f"\033[{code}m" if IS_TTY else ""
 
-RESET = _ansi("0")
-BOLD = _ansi("1")
-DIM = _ansi("2")
-CYAN = _ansi("36")
-GREEN = _ansi("32")
-YELLOW = _ansi("33")
-RED = _ansi("31")
-MAGENTA = _ansi("35")
-BLUE = _ansi("34")
-WHITE = _ansi("37")
-BG_DARK = _ansi("48;5;235")
-CLEAR_LINE = "\033[2K\r" if sys.stdout.isatty() else "\r"
+R = _c("0")       # reset
+B = _c("1")       # bold
+D = _c("2")       # dim
+PURPLE = _c("38;5;141")  # melissa brand purple
+LILAC = _c("38;5;183")   # lighter purple
+GREEN = _c("32")
+YELLOW = _c("33")
+RED = _c("31")
+CYAN = _c("36")
+WHITE = _c("37")
+CL = "\033[2K\r" if IS_TTY else ""
 
-
-def clear_screen():
-    sys.stdout.write("\033[2J\033[H")
-    sys.stdout.flush()
+def w(t=""): sys.stdout.write(t + "\n"); sys.stdout.flush()
+def wr(t): sys.stdout.write(t); sys.stdout.flush()
 
 
-def write(text: str = ""):
-    sys.stdout.write(text + "\n")
-    sys.stdout.flush()
+# ─── Branding ────────────────────────────────────────────────────────────────
+
+VERSION = "9.3.2"
+try:
+    _pkg = Path(__file__).parent / "package.json"
+    if _pkg.exists():
+        VERSION = json.loads(_pkg.read_text()).get("version", VERSION)
+except Exception:
+    pass
+
+WORM = "🐛"  # Melissa's spirit animal
+
+BANNER = f"""
+  {PURPLE}{B}┌─────────────────────────────────────────────┐{R}
+  {PURPLE}{B}│{R}  {WORM} {B}{PURPLE}melissa{R} {D}v{VERSION}{R}                           {PURPLE}{B}│{R}
+  {PURPLE}{B}│{R}  {LILAC}recepcionista virtual con superpoderes{R}     {PURPLE}{B}│{R}
+  {PURPLE}{B}└─────────────────────────────────────────────┘{R}
+"""
+
+BANNER_MINI = f"  {WORM} {B}{PURPLE}melissa{R} {D}v{VERSION}{R}"
 
 
-def write_raw(text: str):
-    sys.stdout.write(text)
-    sys.stdout.flush()
-
-
-# ─── Safe spinner (no race conditions) ────────────────────────────────────────
+# ─── Safe I/O ────────────────────────────────────────────────────────────────
 
 class Spinner:
-    """Thread-safe spinner that properly cleans up."""
     FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-
-    def __init__(self, text: str = ""):
-        self._text = text
-        self._running = False
-        self._thread = None
-
+    def __init__(self, text=""): self._text = text; self._on = False; self._t = None
     def start(self):
-        self._running = True
-        self._thread = threading.Thread(target=self._spin, daemon=True)
-        self._thread.start()
-
-    def stop(self, final_text: str = ""):
-        self._running = False
-        if self._thread:
-            self._thread.join(timeout=1)
-        # Proper cleanup: clear entire line, then write final text
-        write_raw(CLEAR_LINE)
-        if final_text:
-            write(final_text)
-
-    def _spin(self):
+        self._on = True
+        self._t = threading.Thread(target=self._run, daemon=True)
+        self._t.start()
+    def stop(self, msg=""):
+        self._on = False
+        if self._t: self._t.join(timeout=1)
+        wr(CL)
+        if msg: w(msg)
+    def _run(self):
         i = 0
-        while self._running:
-            frame = self.FRAMES[i % len(self.FRAMES)]
-            write_raw(f"{CLEAR_LINE}  {CYAN}{frame}{RESET} {self._text}")
-            time.sleep(0.08)
-            i += 1
+        while self._on:
+            wr(f"{CL}  {PURPLE}{self.FRAMES[i % 10]}{R} {self._text}")
+            time.sleep(0.08); i += 1
 
 
-# ─── Input helpers (never disappear) ─────────────────────────────────────────
-
-def prompt(text: str, default: str = "") -> str:
-    """Safe input that never gets eaten by spinner."""
-    suffix = f" {DIM}[{default}]{RESET}" if default else ""
+def ask(text, default=""):
+    sfx = f" {D}[{default}]{R}" if default else ""
     try:
-        val = input(f"  {text}{suffix}: ")
-        return val.strip() or default
+        v = input(f"  {text}{sfx}: ").strip()
+        return v or default
     except (EOFError, KeyboardInterrupt):
-        write("")
-        return default
+        w(""); return default
+
+def ask_yn(text, default=True):
+    hint = f"{PURPLE}S{R}/n" if default else f"s/{PURPLE}N{R}"
+    v = ask(f"{text} ({hint})")
+    if not v: return default
+    return v.lower() in ("s", "si", "sí", "y", "yes")
 
 
-def prompt_choice(text: str, choices: list) -> str:
-    """Show numbered choices, return selected value."""
-    write(f"\n  {text}")
-    for i, c in enumerate(choices, 1):
-        write(f"    {CYAN}{i}{RESET}. {c}")
-    while True:
-        val = prompt(f"Elige [1-{len(choices)}]")
-        if val.isdigit() and 1 <= int(val) <= len(choices):
-            return choices[int(val) - 1]
-        write(f"    {RED}Opción inválida{RESET}")
+# ─── Status ──────────────────────────────────────────────────────────────────
 
-
-def prompt_yn(text: str, default: bool = True) -> bool:
-    """Yes/no prompt with clear display."""
-    hint = "S/n" if default else "s/N"
-    val = prompt(f"{text} ({hint})")
-    if not val:
-        return default
-    return val.lower() in ("s", "si", "sí", "y", "yes")
-
-
-# ─── Header ──────────────────────────────────────────────────────────────────
-
-def print_header():
-    write("")
-    write(f"  {BOLD}{MAGENTA}  melissa{RESET}  {DIM}v{_get_version()}{RESET}")
-    write(f"  {DIM}recepcionista virtual con superpoderes{RESET}")
-    write("")
-
-
-def print_status_bar():
-    """Show running instances status."""
-    import subprocess
+def get_instances():
     try:
         r = subprocess.run(["pm2", "jlist"], capture_output=True, text=True, timeout=3)
-        import json
-        procs = json.loads(r.stdout)
-        online = [p for p in procs if "melissa" in p.get("name", "") and p.get("pm2_env", {}).get("status") == "online"]
-        if online:
-            names = ", ".join(p["name"].replace("melissa-", "") for p in online)
-            write(f"  {GREEN}●{RESET} {len(online)} instancias online: {DIM}{names}{RESET}")
-        else:
-            write(f"  {YELLOW}○{RESET} Sin instancias corriendo")
+        return json.loads(r.stdout)
     except Exception:
-        write(f"  {DIM}○ PM2 no disponible{RESET}")
-    write("")
+        return []
+
+def print_status():
+    procs = get_instances()
+    online = [p for p in procs if "melissa" in p.get("name", "") and p.get("pm2_env", {}).get("status") == "online"]
+    if online:
+        w(f"  {GREEN}●{R} {len(online)} online{R}")
+    else:
+        w(f"  {YELLOW}○{R} sin instancias{R}")
 
 
 # ─── Commands ────────────────────────────────────────────────────────────────
 
-def show_help():
-    """Show available commands."""
-    write(f"  {BOLD}Comandos:{RESET}")
-    write("")
-    cmds = [
-        ("new", "Crear nueva instancia"),
-        ("list", "Ver instancias"),
-        ("status", "Estado de servicios"),
-        ("doctor", "Diagnóstico de salud"),
-        ("chat", "Hablar con Melissa (studio)"),
-        ("demo", "Activar/desactivar modo demo"),
-        ("persona", "Ver/cambiar personalidad"),
-        ("sync", "Sincronizar código a instancias"),
-        ("logs", "Ver logs en tiempo real"),
-        ("config", "Configuración"),
-        ("help", "Esta ayuda"),
-        ("exit", "Salir"),
-    ]
-    for cmd, desc in cmds:
-        write(f"    {CYAN}{cmd:12s}{RESET} {desc}")
-    write("")
-    write(f"  {DIM}Escribe un comando o 'exit' para salir{RESET}")
-    write("")
+COMMANDS = {
+    # Core
+    "new":       ("Crear instancia nueva",            "core"),
+    "list":      ("Ver instancias",                   "core"),
+    "status":    ("Estado de servicios",              "core"),
+    "doctor":    ("Diagnóstico completo",             "core"),
+    "chat":      ("Hablar con Melissa (studio)",      "core"),
+    "logs":      ("Logs en tiempo real",              "core"),
+    # Control
+    "persona":   ("Ver/cambiar personalidad",         "control"),
+    "demo":      ("Demo mode on/off",                 "control"),
+    "modelo":    ("Cambiar modelo LLM",               "control"),
+    "sync":      ("Sincronizar a instancias",         "control"),
+    "config":    ("Configuración",                    "control"),
+    # Intelligence
+    "studio":    ("Chat interactivo + monitor",       "intel"),
+    "aprender":  ("Enseñar info al negocio",          "intel"),
+    "gaps":      ("Ver preguntas sin responder",      "intel"),
+    "reporte":   ("Reporte semanal",                  "intel"),
+    # Operations
+    "restart":   ("Reiniciar instancia",              "ops"),
+    "stop":      ("Detener instancia",                "ops"),
+    "backup":    ("Crear snapshot",                   "ops"),
+    "pair":      ("Enlazar Telegram router",          "ops"),
+    "bridge":    ("Estado WhatsApp Bridge",           "ops"),
+}
 
 
-def handle_command(cmd: str, args: str = ""):
-    """Route command to handler."""
+def print_help():
+    w(BANNER)
+    print_status()
+    w("")
+
+    groups = {
+        "core": f"  {PURPLE}{B}Esencial{R}",
+        "control": f"  {PURPLE}{B}Control{R}",
+        "intel": f"  {PURPLE}{B}Inteligencia{R}",
+        "ops": f"  {PURPLE}{B}Operaciones{R}",
+    }
+
+    for group_key, header in groups.items():
+        w(header)
+        for cmd, (desc, g) in COMMANDS.items():
+            if g == group_key:
+                w(f"    {PURPLE}{cmd:12s}{R} {desc}")
+        w("")
+
+    w(f"  {D}Shortcuts: l=list  s=status  r=restart  d=doctor  c=chat{R}")
+    w(f"  {D}Interactivo: melissa (sin args) abre shell{R}")
+    w("")
+
+
+# ─── Command dispatch ────────────────────────────────────────────────────────
+
+def dispatch(cmd: str, args: str = ""):
     cmd = cmd.lower().strip()
+    # Shortcuts
+    shortcuts = {"l": "list", "s": "status", "d": "doctor", "c": "chat", "r": "restart",
+                 "h": "help", "?": "help", "q": "exit", "i": "interactive"}
+    cmd = shortcuts.get(cmd, cmd)
 
-    if cmd in ("help", "?", "h"):
-        show_help()
-    elif cmd in ("exit", "quit", "q"):
-        write(f"\n  {DIM}Hasta luego!{RESET}\n")
+    if cmd in ("help", "--help", "-h"):
+        print_help()
+    elif cmd in ("exit", "quit"):
+        w(f"\n  {D}chao! {WORM}{R}\n")
         sys.exit(0)
     elif cmd == "status":
-        _cmd_status()
+        _status()
     elif cmd == "list":
-        _cmd_list()
+        _list()
     elif cmd == "new":
-        _cmd_new()
+        _run_py("melissa_init.py")
     elif cmd in ("doctor", "doc"):
-        _cmd_doctor(args)
-    elif cmd == "chat":
-        _cmd_chat(args)
+        _run_py("melissa_doctor.py", args or "melissa")
+    elif cmd in ("chat", "studio"):
+        _run_py("melissa_studio.py", "--instance", args or "default")
     elif cmd == "persona":
-        _cmd_persona(args)
-    elif cmd == "demo":
-        _cmd_demo(args)
-    elif cmd == "sync":
-        _cmd_sync()
+        _run_py("melissa_persona_cli.py", *(args.split() if args else ["list"]))
     elif cmd == "logs":
-        _cmd_logs(args)
+        _exec("pm2", "logs", args or "melissa", "--lines", "30", "--nostream")
+    elif cmd == "restart":
+        _exec("pm2", "restart", args or "melissa")
+    elif cmd == "stop":
+        _exec("pm2", "stop", args or "melissa")
+    elif cmd in ("sync", "sincronizar"):
+        _run_py("melissa_cli.py", "sync")
+    elif cmd == "demo":
+        _run_py("melissa_cli.py", "demo", args or "")
+    elif cmd == "modelo":
+        _run_py("melissa_cli.py", "modelo", args or "")
     elif cmd == "config":
-        _cmd_config(args)
+        _config(args)
+    elif cmd == "bridge":
+        _run_py("melissa_cli.py", "bridge", args or "")
+    elif cmd == "pair":
+        _run_py("melissa_cli.py", "pair", args or "")
+    elif cmd == "backup":
+        _run_py("melissa_cli.py", "backup", args or "")
+    elif cmd == "gaps":
+        _gaps(args)
+    elif cmd == "aprender":
+        _aprender(args)
+    elif cmd == "reporte":
+        _run_py("melissa_weekly_report.py", args or "default")
+    elif cmd == "interactive":
+        interactive()
+    elif cmd == "--version" or cmd == "-v":
+        w(f"  melissa v{VERSION}")
     else:
-        # Delegate to old CLI for unrecognized commands
-        _delegate_old_cli(cmd, args)
+        # Try old CLI
+        _run_py("melissa_cli.py", cmd, args)
 
 
-# ─── Command implementations ─────────────────────────────────────────────────
+# ─── Implementations ─────────────────────────────────────────────────────────
 
-def _cmd_status():
-    import subprocess, json
-    try:
-        r = subprocess.run(["pm2", "jlist"], capture_output=True, text=True, timeout=5)
-        procs = json.loads(r.stdout)
-        write(f"\n  {BOLD}Instancias:{RESET}\n")
-        for p in procs:
-            name = p.get("name", "")
-            if "melissa" not in name and "logrotate" not in name:
-                continue
-            status = p.get("pm2_env", {}).get("status", "?")
-            icon = f"{GREEN}●{RESET}" if status == "online" else f"{RED}●{RESET}"
-            mem = p.get("monit", {}).get("memory", 0) / 1024 / 1024
-            write(f"    {icon} {name:35s} {DIM}{mem:.0f}MB{RESET}")
-        write("")
-    except Exception as e:
-        write(f"  {RED}Error: {e}{RESET}")
+def _status():
+    procs = get_instances()
+    w(f"\n  {B}Instancias:{R}\n")
+    for p in procs:
+        name = p.get("name", "")
+        if "melissa" not in name:
+            continue
+        st = p.get("pm2_env", {}).get("status", "?")
+        mem = p.get("monit", {}).get("memory", 0) / 1024 / 1024
+        icon = f"{GREEN}●{R}" if st == "online" else f"{RED}●{R}"
+        w(f"    {icon} {name:35s} {D}{mem:.0f}MB{R}")
+    w("")
 
-
-def _cmd_list():
-    instances_dir = Path("/home/ubuntu/melissa-instances")
-    if not instances_dir.exists():
-        write(f"  {DIM}No hay instancias creadas{RESET}")
-        return
-    write(f"\n  {BOLD}Instancias disponibles:{RESET}\n")
-    for d in sorted(instances_dir.iterdir()):
+def _list():
+    idir = Path("/home/ubuntu/melissa-instances")
+    if not idir.exists():
+        w(f"  {D}sin instancias{R}"); return
+    w(f"\n  {B}Instancias:{R}\n")
+    for d in sorted(idir.iterdir()):
         if d.is_dir() and (d / ".env").exists():
-            env = (d / ".env").read_text()
             port = ""
-            for line in env.splitlines():
-                if line.startswith("PORT="):
-                    port = line.split("=")[1]
-            write(f"    {CYAN}•{RESET} {d.name} {DIM}(:{port}){RESET}")
-    write("")
+            for line in (d / ".env").read_text().splitlines():
+                if line.startswith("PORT="): port = line.split("=")[1]
+            w(f"    {PURPLE}●{R} {d.name} {D}(:{port}){R}")
+    w("")
 
+def _config(args):
+    w(f"\n  {B}Config (.env):{R}\n")
+    env = Path("/home/ubuntu/melissa/.env")
+    if env.exists():
+        for line in env.read_text().splitlines()[:20]:
+            if line and not line.startswith("#") and "KEY" not in line.upper() and "SECRET" not in line.upper():
+                w(f"    {D}{line}{R}")
+    w(f"\n  {D}Editar: nano {env}{R}\n")
 
-def _cmd_new():
-    """Create new instance — delegates to melissa_init.py."""
-    write(f"\n  {BOLD}Nueva instancia{RESET}\n")
-    try:
-        import subprocess
-        subprocess.run([sys.executable, "melissa_init.py"], cwd="/home/ubuntu/melissa")
-    except Exception as e:
-        write(f"  {RED}Error: {e}{RESET}")
+def _gaps(args):
+    from pathlib import Path
+    from datetime import datetime
+    gaps_dir = Path("knowledge_gaps")
+    if not gaps_dir.exists():
+        w(f"  {GREEN}●{R} Sin gaps pendientes"); return
+    today = datetime.now().strftime("%Y-%m-%d")
+    f = gaps_dir / f"{today}.jsonl"
+    if not f.exists():
+        w(f"  {GREEN}●{R} Sin gaps hoy"); return
+    w(f"\n  {B}Knowledge gaps hoy:{R}\n")
+    for line in open(f):
+        g = json.loads(line)
+        w(f"    {YELLOW}?{R} {g.get('user_msg', '')[:60]} {D}(conf: {g.get('confidence',0):.0%}){R}")
+    w("")
 
-
-def _cmd_doctor(args: str):
-    """Health check."""
-    instance = args.strip() or "melissa"
-    write(f"\n  {BOLD}Doctor: {instance}{RESET}")
-    try:
-        import subprocess
-        subprocess.run([sys.executable, "melissa_doctor.py", instance], cwd="/home/ubuntu/melissa")
-    except Exception as e:
-        write(f"  {RED}Error: {e}{RESET}")
-
-
-def _cmd_chat(args: str):
-    """Open studio chat."""
-    instance = args.strip() or "default"
-    try:
-        import subprocess
-        subprocess.run([sys.executable, "melissa_studio.py", "--instance", instance], cwd="/home/ubuntu/melissa")
-    except Exception as e:
-        write(f"  {RED}Error: {e}{RESET}")
-
-
-def _cmd_persona(args: str):
-    """Persona management."""
-    try:
-        import subprocess
-        cmd_args = args.split() if args else ["list"]
-        subprocess.run([sys.executable, "melissa_persona_cli.py"] + cmd_args, cwd="/home/ubuntu/melissa")
-    except Exception as e:
-        write(f"  {RED}Error: {e}{RESET}")
-
-
-def _cmd_demo(args: str):
-    """Toggle demo mode."""
-    write(f"  {DIM}Demo mode management — use: demo on | demo off{RESET}")
-    if "on" in args:
-        write(f"  {GREEN}Demo activado{RESET}")
-    elif "off" in args:
-        write(f"  {YELLOW}Demo desactivado{RESET}")
-
-
-def _cmd_sync():
-    """Sync code to instances."""
-    spin = Spinner("Sincronizando...")
-    spin.start()
-    time.sleep(1)
-    # Delegate to old sync
-    spin.stop(f"  {GREEN}✓{RESET} Sincronización completa")
-
-
-def _cmd_logs(args: str):
-    """Show logs."""
-    instance = args.strip() or "melissa"
-    import subprocess
-    try:
-        subprocess.run(["pm2", "logs", instance, "--lines", "30", "--nostream"])
-    except Exception:
-        write(f"  {RED}PM2 no disponible{RESET}")
-
-
-def _cmd_config(args: str):
-    """Show/edit config."""
-    write(f"\n  {BOLD}Configuración:{RESET}\n")
-    env_file = Path("/home/ubuntu/melissa/.env")
-    if env_file.exists():
-        for line in env_file.read_text().splitlines()[:15]:
-            if line and not line.startswith("#") and "KEY" not in line and "SECRET" not in line:
-                write(f"    {DIM}{line}{RESET}")
-    write(f"\n  {DIM}Editar: nano /home/ubuntu/melissa/.env{RESET}\n")
-
-
-def _delegate_old_cli(cmd: str, args: str):
-    """Delegate to old CLI for commands not yet migrated."""
-    import subprocess
-    full_cmd = f"{cmd} {args}".strip()
-    try:
-        subprocess.run(
-            [sys.executable, "melissa_cli.py", cmd] + (args.split() if args else []),
-            cwd="/home/ubuntu/melissa",
-        )
-    except Exception:
-        write(f"  {RED}Comando no reconocido: {cmd}{RESET}")
-        write(f"  {DIM}Escribe 'help' para ver comandos disponibles{RESET}")
-
-
-# ─── First run / onboarding ──────────────────────────────────────────────────
-
-def is_first_run() -> bool:
-    """Check if this is the first time running melissa."""
-    return not Path("/home/ubuntu/.melissa/initialized").exists()
-
-
-def run_onboarding():
-    """Interactive onboarding for first-time users."""
-    clear_screen()
-    write("")
-    write(f"  {BOLD}{MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{RESET}")
-    write(f"  {BOLD}    Bienvenido a Melissa AI{RESET}")
-    write(f"  {DIM}    Recepcionista virtual para tu negocio{RESET}")
-    write(f"  {BOLD}{MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{RESET}")
-    write("")
-    write(f"  Melissa responde el WhatsApp de tu negocio como si")
-    write(f"  fuera parte de tu equipo. Filtra clientes, agenda citas,")
-    write(f"  y aprende tu estilo con cada conversación.")
-    write("")
-
-    if not prompt_yn("Quieres configurar tu primera instancia?"):
-        write(f"\n  {DIM}OK! Puedes hacerlo después con: melissa new{RESET}\n")
-        _mark_initialized()
+def _aprender(args):
+    if not args or "→" not in args and "->" not in args:
+        w(f"  {D}Uso: melissa aprender \"pregunta\" → \"respuesta\"{R}")
         return
+    sep = "→" if "→" in args else "->"
+    q, a = args.split(sep, 1)
+    q = q.strip().strip('"')
+    a = a.strip().strip('"')
+    teachings_dir = Path("teachings")
+    teachings_dir.mkdir(exist_ok=True)
+    with open(teachings_dir / "default.jsonl", "a") as f:
+        f.write(json.dumps({"ts": time.time(), "question": q, "answer": a}) + "\n")
+    w(f"  {GREEN}✓{R} Aprendido: {q[:40]} → {a[:40]}")
 
-    write("")
-    _cmd_new()
-    _mark_initialized()
+
+# ─── Helpers ─────────────────────────────────────────────────────────────────
+
+def _run_py(*args):
+    try:
+        subprocess.run([sys.executable] + [str(a) for a in args], cwd="/home/ubuntu/melissa")
+    except Exception as e:
+        w(f"  {RED}Error: {e}{R}")
+
+def _exec(*args):
+    try:
+        subprocess.run(list(args))
+    except Exception as e:
+        w(f"  {RED}Error: {e}{R}")
 
 
-def _mark_initialized():
-    init_file = Path("/home/ubuntu/.melissa/initialized")
-    init_file.parent.mkdir(parents=True, exist_ok=True)
-    init_file.write_text(time.strftime("%Y-%m-%d %H:%M:%S"))
+# ─── Interactive mode ─────────────────────────────────────────────────────────
 
-
-# ─── Interactive loop ─────────────────────────────────────────────────────────
-
-def interactive_mode():
-    """Main interactive loop — like opencode."""
-    # Setup readline for history + autocomplete
+def interactive():
     try:
         import readline
         hist = Path.home() / ".melissa" / "cli_history"
         hist.parent.mkdir(exist_ok=True)
-        if hist.exists():
-            readline.read_history_file(str(hist))
+        if hist.exists(): readline.read_history_file(str(hist))
         readline.set_history_length(500)
-
-        cmds = ["new", "list", "status", "doctor", "chat", "demo", "persona",
-                "sync", "logs", "config", "help", "exit"]
-        def completer(text, state):
-            opts = [c for c in cmds if c.startswith(text)]
+        def _comp(text, state):
+            opts = [c for c in COMMANDS if c.startswith(text)]
             return opts[state] if state < len(opts) else None
-        readline.set_completer(completer)
+        readline.set_completer(_comp)
         readline.parse_and_bind("tab: complete")
-
         import atexit
         atexit.register(readline.write_history_file, str(hist))
     except Exception:
         pass
 
-    clear_screen()
-    print_header()
-    print_status_bar()
-    show_help()
+    w(BANNER)
+    print_status()
+    w(f"  {D}Escribe un comando o 'help'. Tab para autocompletar.{R}\n")
 
     while True:
         try:
-            line = input(f"  {MAGENTA}melissa{RESET} {DIM}›{RESET} ").strip()
+            line = input(f"  {PURPLE}{WORM} melissa{R} {D}›{R} ").strip()
         except (EOFError, KeyboardInterrupt):
-            write(f"\n\n  {DIM}Hasta luego!{RESET}\n")
-            break
-
-        if not line:
-            continue
-
+            w(f"\n  {D}chao! {WORM}{R}\n"); break
+        if not line: continue
         parts = line.split(maxsplit=1)
-        cmd = parts[0]
-        args = parts[1] if len(parts) > 1 else ""
-        handle_command(cmd, args)
+        dispatch(parts[0], parts[1] if len(parts) > 1 else "")
 
 
-# ─── Utilities ────────────────────────────────────────────────────────────────
+# ─── Onboarding ──────────────────────────────────────────────────────────────
 
-def _get_version() -> str:
-    try:
-        pkg = Path("/home/ubuntu/melissa/package.json")
-        if pkg.exists():
-            import json
-            return json.loads(pkg.read_text()).get("version", "?")
-    except Exception:
-        pass
-    return "9.3.2"
+def is_first_run():
+    return not Path(os.path.expanduser("~/.melissa/initialized")).exists()
+
+def onboarding():
+    w(f"""
+  {PURPLE}{B}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{R}
+
+      {WORM} {B}Bienvenido a Melissa AI{R}
+
+      {LILAC}Tu recepcionista virtual con superpoderes.{R}
+      {LILAC}Responde WhatsApp, aprende tu negocio, agenda citas.{R}
+
+  {PURPLE}{B}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{R}
+""")
+    if ask_yn("Configurar tu primera instancia?"):
+        w("")
+        _run_py("melissa_init.py")
+
+    Path(os.path.expanduser("~/.melissa")).mkdir(parents=True, exist_ok=True)
+    Path(os.path.expanduser("~/.melissa/initialized")).write_text(time.strftime("%Y-%m-%d"))
 
 
-# ─── Entry point ─────────────────────────────────────────────────────────────
+# ─── Main ────────────────────────────────────────────────────────────────────
 
 def main():
-    # Handle Ctrl+C gracefully
-    signal.signal(signal.SIGINT, lambda *_: (write(f"\n\n  {DIM}Hasta luego!{RESET}\n"), sys.exit(0)))
+    signal.signal(signal.SIGINT, lambda *_: (w(f"\n  {D}chao! {WORM}{R}\n"), sys.exit(0)))
 
-    # If arguments passed, handle as one-shot command
     if len(sys.argv) > 1:
         cmd = sys.argv[1]
         args = " ".join(sys.argv[2:])
-        # First-run check even for one-shot
         if is_first_run() and cmd not in ("help", "--help", "-h", "--version", "-v"):
-            run_onboarding()
-        handle_command(cmd, args)
-        return
-
-    # No arguments: interactive mode
-    if is_first_run():
-        run_onboarding()
+            onboarding()
+        dispatch(cmd, args)
     else:
-        interactive_mode()
+        if is_first_run():
+            onboarding()
+        else:
+            interactive()
 
 
 if __name__ == "__main__":
