@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""melissa — CLI potente para Melissa AI."""
+"""melissa — AI receptionist platform."""
 from __future__ import annotations
 
 import os
@@ -8,32 +8,33 @@ import time
 import json
 import subprocess
 import signal
+import random
 from pathlib import Path
 
-# ─── Rich imports (mega output) ───────────────────────────────────────────────
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
-from rich.columns import Columns
-from rich.markdown import Markdown
 from rich import box
-from rich.style import Style
 from rich.theme import Theme
+from rich.padding import Padding
+from rich.rule import Rule
 
-# ─── Branding ────────────────────────────────────────────────────────────────
+# ─── Theme ───────────────────────────────────────────────────────────────────
 
-MELISSA_THEME = Theme({
-    "melissa": "bold #b48ead",       # soft purple
-    "accent": "#d08770",             # warm coral
-    "success": "#a3be8c",            # green
-    "warning": "#ebcb8b",            # gold
-    "error": "#bf616a",              # soft red
-    "dim": "#4c566a",                # muted
-    "info": "#88c0d0",               # blue
+THEME = Theme({
+    "m": "bold #b48ead",
+    "m.dim": "#8b7498",
+    "m.bright": "bold #c9a0dc",
+    "ok": "#a3be8c",
+    "warn": "#ebcb8b",
+    "err": "#bf616a",
+    "dim": "#4c566a",
+    "info": "#88c0d0",
+    "text": "#d8dee9",
 })
 
-console = Console(theme=MELISSA_THEME)
+con = Console(theme=THEME)
 
 VERSION = "9.3.3"
 try:
@@ -41,364 +42,272 @@ try:
     if _p.exists(): VERSION = json.loads(_p.read_text()).get("version", VERSION)
 except Exception: pass
 
-WORM_ART = """[melissa]
-     ╭──╮
-    ╭┤  ├─╮
-    │╰──╯ │  melissa
-    ╰─────╯[/melissa]"""
+# ─── ASCII Brand ─────────────────────────────────────────────────────────────
 
-WORM_MINI = "[melissa]⬡[/melissa]"
+LOGO = """[m]
+    ╔╦╗╔═╗╦  ╦╔═╗╔═╗╔═╗
+    ║║║║╣ ║  ║╚═╗╚═╗╠═╣
+    ╩ ╩╚═╝╩═╝╩╚═╝╚═╝╩ ╩[/m]"""
 
+TAGLINES = [
+    "your AI receptionist",
+    "omni-channel AI receptionist",
+    "the receptionist that never sleeps",
+    "AI that sounds human",
+    "WhatsApp AI for business",
+    "recepcionista con IA",
+]
 
-# ─── Header ──────────────────────────────────────────────────────────────────
-
-def print_banner():
-    banner = Text()
-    banner.append("  ⬡ ", style="bold #b48ead")
-    banner.append("melissa", style="bold #b48ead")
-    banner.append(f"  v{VERSION}", style="dim")
-
-    console.print()
-    console.print(Panel(
-        banner,
-        border_style="#b48ead",
-        box=box.ROUNDED,
-        subtitle="[dim]recepcionista virtual con superpoderes[/dim]",
-        subtitle_align="left",
-        padding=(0, 1),
-    ))
+def _tagline():
+    return random.choice(TAGLINES)
 
 
-def print_status():
-    """Quick status line."""
-    procs = _get_pm2()
-    online = [p for p in procs if "melissa" in p.get("name", "") and p.get("pm2_env", {}).get("status") == "online"]
+# ─── Banner ──────────────────────────────────────────────────────────────────
+
+def banner():
+    con.print()
+    con.print(LOGO)
+    con.print(f"    [dim]v{VERSION}[/dim]  [m.dim]— {_tagline()}[/m.dim]")
+    con.print()
+
+    # Status bar
+    procs = _pm2()
+    online = [p for p in procs if "melissa" in p.get("name","") and p.get("pm2_env",{}).get("status") == "online"]
     if online:
-        console.print(f"  [success]●[/success] {len(online)} instancias online", highlight=False)
+        names = " ".join(f"[m]{p['name'].replace('melissa-','').replace('melissa','main')}[/m]" for p in online)
+        con.print(f"    [ok]●[/ok] {names}")
     else:
-        console.print(f"  [warning]○[/warning] sin instancias corriendo", highlight=False)
-    console.print()
+        con.print(f"    [warn]○[/warn] [dim]no instances running[/dim]")
+    con.print()
 
 
 # ─── Help ────────────────────────────────────────────────────────────────────
 
-def print_help():
-    print_banner()
-    print_status()
+def help():
+    banner()
 
-    t = Table(show_header=False, box=None, padding=(0, 2, 0, 0), show_edge=False)
-    t.add_column(style="bold #b48ead", width=14)
-    t.add_column(style="")
+    sections = [
+        ("CORE", [
+            ("new",     "create instance"),
+            ("list",    "show instances"),
+            ("status",  "services health"),
+            ("doctor",  "full diagnostic"),
+            ("chat",    "talk to melissa"),
+            ("logs",    "live logs"),
+        ]),
+        ("CONTROL", [
+            ("persona", "personality config"),
+            ("demo",    "demo mode toggle"),
+            ("modelo",  "switch LLM model"),
+            ("sync",    "deploy to instances"),
+            ("config",  "edit settings"),
+        ]),
+        ("INTELLIGENCE", [
+            ("aprender","teach a response"),
+            ("gaps",    "unanswered questions"),
+            ("reporte", "weekly brain report"),
+            ("studio",  "live monitor"),
+        ]),
+        ("OPS", [
+            ("restart", "restart instance"),
+            ("stop",    "stop instance"),
+            ("backup",  "create snapshot"),
+            ("bridge",  "whatsapp bridge"),
+            ("pair",    "telegram routing"),
+        ]),
+    ]
 
-    t.add_row("", "[bold]Esencial[/bold]")
-    t.add_row("  new", "Crear instancia")
-    t.add_row("  list", "Ver instancias")
-    t.add_row("  status", "Estado de servicios")
-    t.add_row("  doctor", "Diagnóstico de salud")
-    t.add_row("  chat", "Hablar con Melissa")
-    t.add_row("  logs", "Ver logs")
-    t.add_row()
-    t.add_row("", "[bold]Control[/bold]")
-    t.add_row("  persona", "Personalidad")
-    t.add_row("  demo", "Demo on/off")
-    t.add_row("  modelo", "Cambiar LLM")
-    t.add_row("  sync", "Sincronizar instancias")
-    t.add_row("  config", "Configuración")
-    t.add_row()
-    t.add_row("", "[bold]Inteligencia[/bold]")
-    t.add_row("  aprender", "Enseñar respuesta")
-    t.add_row("  gaps", "Preguntas sin resolver")
-    t.add_row("  reporte", "Reporte semanal")
-    t.add_row("  studio", "Monitor en tiempo real")
-    t.add_row()
-    t.add_row("", "[bold]Operaciones[/bold]")
-    t.add_row("  restart", "Reiniciar")
-    t.add_row("  stop", "Detener")
-    t.add_row("  backup", "Snapshot")
-    t.add_row("  bridge", "WhatsApp Bridge")
-    t.add_row("  pair", "Telegram router")
+    for title, cmds in sections:
+        con.print(f"    [m]{title}[/m]")
+        for cmd, desc in cmds:
+            con.print(f"      [m.bright]{cmd:10s}[/m.bright] [dim]{desc}[/dim]")
+        con.print()
 
-    console.print(t)
-    console.print()
-    console.print("  [dim]Shortcuts:[/dim] [melissa]l[/melissa]=list  [melissa]s[/melissa]=status  [melissa]d[/melissa]=doctor  [melissa]c[/melissa]=chat")
-    console.print("  [dim]Lenguaje natural:[/dim] [melissa]melissa[/melissa] 'crear instancia para gym'")
-    console.print()
+    con.print(f"    [dim]shortcuts:[/dim] [m]l[/m] list  [m]s[/m] status  [m]d[/m] doctor  [m]c[/m] chat  [m]r[/m] restart")
+    con.print()
 
 
 # ─── Commands ────────────────────────────────────────────────────────────────
 
-def cmd_status(args=""):
-    procs = _get_pm2()
-    t = Table(title="Instancias", box=box.SIMPLE_HEAD, border_style="#b48ead", show_edge=False)
-    t.add_column("", width=2)
-    t.add_column("Nombre", style="bold")
-    t.add_column("Estado")
-    t.add_column("Memoria", justify="right", style="dim")
-    t.add_column("Uptime", justify="right", style="dim")
+def do_status(args=""):
+    t = Table(box=box.SIMPLE, border_style="#b48ead", show_edge=False, pad_edge=False, padding=(0,1))
+    t.add_column("", width=3)
+    t.add_column("instance", style="bold")
+    t.add_column("status")
+    t.add_column("mem", justify="right", style="dim")
+    t.add_column("up", justify="right", style="dim")
 
-    for p in procs:
-        name = p.get("name", "")
-        if "melissa" not in name:
-            continue
-        st = p.get("pm2_env", {}).get("status", "?")
-        mem = p.get("monit", {}).get("memory", 0) / 1024 / 1024
-        uptime_ms = p.get("pm2_env", {}).get("pm_uptime", 0)
-        uptime = _fmt_uptime(uptime_ms) if uptime_ms else "-"
-        icon = "[success]●[/success]" if st == "online" else "[error]●[/error]"
-        st_text = f"[success]{st}[/success]" if st == "online" else f"[error]{st}[/error]"
-        t.add_row(icon, name, st_text, f"{mem:.0f}MB", uptime)
+    for p in _pm2():
+        name = p.get("name","")
+        if "melissa" not in name: continue
+        st = p.get("pm2_env",{}).get("status","?")
+        mem = p.get("monit",{}).get("memory",0) / 1024 / 1024
+        up = _uptime(p.get("pm2_env",{}).get("pm_uptime",0))
+        icon = "[ok]●[/ok]" if st == "online" else "[err]●[/err]"
+        st_s = f"[ok]{st}[/ok]" if st == "online" else f"[err]{st}[/err]"
+        t.add_row(icon, name, st_s, f"{mem:.0f}M", up)
 
-    console.print()
-    console.print(t)
-    console.print()
+    con.print()
+    con.print(Padding(t, (0,4)))
+    con.print()
 
 
-def cmd_list(args=""):
+def do_list(args=""):
     idir = Path("/home/ubuntu/melissa-instances")
     if not idir.exists():
-        console.print("  [dim]Sin instancias[/dim]")
-        return
+        con.print("    [dim]no instances[/dim]"); return
 
-    t = Table(title="Instancias", box=box.SIMPLE_HEAD, border_style="#b48ead", show_edge=False)
-    t.add_column("", width=2)
-    t.add_column("Nombre", style="bold")
-    t.add_column("Puerto", style="dim")
-    t.add_column("Sector", style="dim")
+    t = Table(box=box.SIMPLE, border_style="#b48ead", show_edge=False, pad_edge=False, padding=(0,1))
+    t.add_column("", width=3)
+    t.add_column("name", style="bold")
+    t.add_column("port", style="dim")
+    t.add_column("sector", style="m.dim")
 
     for d in sorted(idir.iterdir()):
-        if not d.is_dir() or not (d / ".env").exists():
-            continue
-        env = (d / ".env").read_text()
-        port, sector = "", ""
-        for line in env.splitlines():
-            if line.startswith("PORT="): port = line.split("=")[1]
-            if line.startswith("SECTOR="): sector = line.split("=")[1]
-        t.add_row("[melissa]⬡[/melissa]", d.name, f":{port}" if port else "-", sector or "-")
+        if not d.is_dir() or not (d / ".env").exists(): continue
+        port = sector = ""
+        for line in (d / ".env").read_text().splitlines():
+            if line.startswith("PORT="): port = line.split("=",1)[1]
+            if line.startswith("SECTOR="): sector = line.split("=",1)[1]
+        t.add_row("[m]⬡[/m]", d.name, f":{port}" if port else "-", sector or "-")
 
-    console.print()
-    console.print(t)
-    console.print()
+    con.print()
+    con.print(Padding(t, (0,4)))
+    con.print()
 
 
-def cmd_doctor(args=""):
-    instance = args.strip() or "melissa"
-    _run_py("melissa_doctor.py", instance)
+def do_doctor(args=""): _py("melissa_doctor.py", args or "melissa")
+def do_chat(args=""): _py("melissa_studio.py", "--instance", args or "default")
+def do_new(args=""): _py("melissa_init.py")
+def do_persona(args=""): _py("melissa_persona_cli.py", *(args.split() if args else ["list"]))
+def do_logs(args=""): _sh("pm2", "logs", args or "melissa", "--lines", "30", "--nostream")
+def do_sync(args=""): _py("melissa_cli.py", "sync")
+def do_demo(args=""): _py("melissa_cli.py", "demo", args or "")
+def do_modelo(args=""): _py("melissa_cli.py", "modelo", args or "")
+def do_restart(args=""): _sh("pm2", "restart", args or "melissa")
+def do_stop(args=""): _sh("pm2", "stop", args or "melissa")
+def do_backup(args=""): _py("melissa_cli.py", "backup", args or "")
+def do_bridge(args=""): _py("melissa_cli.py", "bridge", args or "")
+def do_pair(args=""): _py("melissa_cli.py", "pair", args or "")
+def do_reporte(args=""): _py("melissa_weekly_report.py", args or "default")
 
-
-def cmd_chat(args=""):
-    instance = args.strip() or "default"
-    _run_py("melissa_studio.py", "--instance", instance)
-
-
-def cmd_persona(args=""):
-    parts = args.split() if args else ["list"]
-    _run_py("melissa_persona_cli.py", *parts)
-
-
-def cmd_logs(args=""):
-    instance = args.strip() or "melissa"
-    _exec("pm2", "logs", instance, "--lines", "30", "--nostream")
-
-
-def cmd_new(args=""):
-    _run_py("melissa_init.py")
-
-
-def cmd_sync(args=""):
-    _run_py("melissa_cli.py", "sync")
-
-
-def cmd_demo(args=""):
-    _run_py("melissa_cli.py", "demo", args or "")
-
-
-def cmd_modelo(args=""):
-    _run_py("melissa_cli.py", "modelo", args or "")
-
-
-def cmd_config(args=""):
-    console.print()
+def do_config(args=""):
     env = Path("/home/ubuntu/melissa/.env")
-    if env.exists():
-        lines = []
-        for line in env.read_text().splitlines():
-            if line and not line.startswith("#") and "KEY" not in line.upper() and "SECRET" not in line.upper():
-                lines.append(line)
-        console.print(Panel("\n".join(lines[:20]), title="[melissa].env[/melissa]", border_style="dim", box=box.ROUNDED))
-    console.print(f"  [dim]Editar: nano {env}[/dim]")
-    console.print()
+    if not env.exists(): con.print("    [dim]no .env found[/dim]"); return
+    lines = [l for l in env.read_text().splitlines()
+             if l and not l.startswith("#") and "KEY" not in l.upper() and "SECRET" not in l.upper()]
+    con.print()
+    con.print(Padding(Panel("\n".join(lines[:20]), border_style="dim", box=box.ROUNDED, title="[m].env[/m]"), (0,4)))
+    con.print(f"    [dim]edit: nano {env}[/dim]")
+    con.print()
 
-
-def cmd_gaps(args=""):
+def do_gaps(args=""):
     from datetime import datetime
-    gaps_dir = Path("knowledge_gaps")
-    if not gaps_dir.exists():
-        console.print("  [success]●[/success] Sin gaps")
-        return
+    gd = Path("knowledge_gaps")
     today = datetime.now().strftime("%Y-%m-%d")
-    f = gaps_dir / f"{today}.jsonl"
+    f = gd / f"{today}.jsonl"
     if not f.exists():
-        console.print("  [success]●[/success] Sin gaps hoy")
-        return
-    console.print()
+        con.print("    [ok]●[/ok] [dim]no gaps today[/dim]"); return
+    con.print()
     for line in open(f):
         g = json.loads(line)
-        console.print(f"  [warning]?[/warning] {g.get('user_msg', '')[:60]} [dim](conf: {g.get('confidence',0):.0%})[/dim]")
-    console.print()
+        con.print(f"    [warn]?[/warn] {g.get('user_msg','')[:55]} [dim]({g.get('confidence',0):.0%})[/dim]")
+    con.print()
 
-
-def cmd_aprender(args=""):
+def do_aprender(args=""):
     if not args or ("→" not in args and "->" not in args):
-        console.print('  [dim]Uso: melissa aprender "pregunta" → "respuesta"[/dim]')
-        return
+        con.print('    [dim]uso: melissa aprender "pregunta" → "respuesta"[/dim]'); return
     sep = "→" if "→" in args else "->"
     q, a = args.split(sep, 1)
     q, a = q.strip().strip('"'), a.strip().strip('"')
     Path("teachings").mkdir(exist_ok=True)
     with open("teachings/default.jsonl", "a") as f:
         f.write(json.dumps({"ts": time.time(), "question": q, "answer": a}) + "\n")
-    console.print(f"  [success]✓[/success] Aprendido: [melissa]{q[:40]}[/melissa] → {a[:40]}")
+    con.print(f"    [ok]✓[/ok] learned: [m]{q[:35]}[/m] → {a[:35]}")
 
 
-def cmd_reporte(args=""):
-    _run_py("melissa_weekly_report.py", args or "default")
+# ─── Router ──────────────────────────────────────────────────────────────────
 
-
-def cmd_restart(args=""):
-    instance = args.strip() or "melissa"
-    _exec("pm2", "restart", instance)
-
-
-def cmd_stop(args=""):
-    instance = args.strip() or "melissa"
-    _exec("pm2", "stop", instance)
-
-
-def cmd_backup(args=""):
-    _run_py("melissa_cli.py", "backup", args or "")
-
-
-def cmd_bridge(args=""):
-    _run_py("melissa_cli.py", "bridge", args or "")
-
-
-def cmd_pair(args=""):
-    _run_py("melissa_cli.py", "pair", args or "")
-
-
-# ─── Dispatch ────────────────────────────────────────────────────────────────
-
-DISPATCH = {
-    "help": print_help, "--help": print_help, "-h": print_help, "h": print_help, "?": print_help,
-    "status": cmd_status, "s": cmd_status,
-    "list": cmd_list, "l": cmd_list,
-    "new": cmd_new,
-    "doctor": cmd_doctor, "doc": cmd_doctor, "d": cmd_doctor,
-    "chat": cmd_chat, "c": cmd_chat, "studio": cmd_chat,
-    "persona": cmd_persona,
-    "logs": cmd_logs,
-    "demo": cmd_demo,
-    "modelo": cmd_modelo,
-    "sync": cmd_sync, "sincronizar": cmd_sync,
-    "config": cmd_config,
-    "gaps": cmd_gaps,
-    "aprender": cmd_aprender,
-    "reporte": cmd_reporte,
-    "restart": cmd_restart, "r": cmd_restart,
-    "stop": cmd_stop,
-    "backup": cmd_backup,
-    "bridge": cmd_bridge,
-    "pair": cmd_pair,
+CMDS = {
+    "help": help, "--help": help, "-h": help, "?": help, "h": help,
+    "status": do_status, "s": do_status,
+    "list": do_list, "l": do_list,
+    "new": do_new, "doctor": do_doctor, "d": do_doctor, "doc": do_doctor,
+    "chat": do_chat, "c": do_chat, "studio": do_chat,
+    "persona": do_persona, "logs": do_logs, "demo": do_demo,
+    "modelo": do_modelo, "sync": do_sync, "sincronizar": do_sync,
+    "config": do_config, "gaps": do_gaps, "aprender": do_aprender,
+    "reporte": do_reporte, "restart": do_restart, "r": do_restart,
+    "stop": do_stop, "backup": do_backup, "bridge": do_bridge, "pair": do_pair,
 }
 
-
-def dispatch(cmd: str, args: str = ""):
-    cmd = cmd.lower().strip()
+def route(cmd, args=""):
     if cmd in ("--version", "-v"):
-        console.print(f"  melissa v{VERSION}")
-        return
-    handler = DISPATCH.get(cmd)
-    if handler:
-        handler(args)
-    else:
-        # Delegate to old CLI
-        _run_py("melissa_cli.py", cmd, args)
+        con.print(f"    melissa v{VERSION}"); return
+    fn = CMDS.get(cmd.lower())
+    if fn: fn(args)
+    else: _py("melissa_cli.py", cmd, args)
 
 
 # ─── Onboarding ──────────────────────────────────────────────────────────────
 
-def is_first_run():
+def first_run():
     return not Path(os.path.expanduser("~/.melissa/initialized")).exists()
 
-def onboarding():
-    console.print()
-    console.print(Panel(
-        "[bold melissa]Bienvenido a Melissa AI[/bold melissa]\n\n"
-        "Tu recepcionista virtual con superpoderes.\n"
-        "Responde WhatsApp, aprende tu negocio, agenda citas.",
-        border_style="#b48ead",
-        box=box.DOUBLE,
-        padding=(1, 2),
+def onboard():
+    con.print()
+    con.print(LOGO)
+    con.print()
+    con.print(Panel(
+        "[bold]Welcome to Melissa AI[/bold]\n\n"
+        "[text]The AI receptionist that sounds human.[/text]\n"
+        "[text]Responds WhatsApp, learns your business, books appointments.[/text]",
+        border_style="#b48ead", box=box.DOUBLE, padding=(1,2),
     ))
-    console.print()
-    resp = console.input("  [melissa]⬡[/melissa] Configurar primera instancia? [dim](s/n)[/dim] ")
-    if resp.lower() in ("s", "si", "sí", "y", "yes", ""):
-        console.print()
-        cmd_new()
+    con.print()
+    r = con.input("    [m]⬡[/m] setup first instance? [dim](y/n)[/dim] ")
+    if r.lower() in ("y","yes","s","si","sí",""):
+        con.print()
+        do_new()
     Path(os.path.expanduser("~/.melissa")).mkdir(parents=True, exist_ok=True)
     Path(os.path.expanduser("~/.melissa/initialized")).write_text(time.strftime("%Y-%m-%d"))
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
-def _get_pm2():
+def _pm2():
     try:
-        r = subprocess.run(["pm2", "jlist"], capture_output=True, text=True, timeout=5)
+        r = subprocess.run(["pm2","jlist"], capture_output=True, text=True, timeout=5)
         return json.loads(r.stdout)
-    except Exception:
-        return []
+    except: return []
 
-def _fmt_uptime(pm_uptime_ms):
-    secs = (time.time() * 1000 - pm_uptime_ms) / 1000
-    if secs < 60: return f"{int(secs)}s"
-    if secs < 3600: return f"{int(secs/60)}m"
-    if secs < 86400: return f"{int(secs/3600)}h"
-    return f"{int(secs/86400)}d"
+def _uptime(ms):
+    if not ms: return "-"
+    s = (time.time()*1000 - ms) / 1000
+    if s < 60: return f"{int(s)}s"
+    if s < 3600: return f"{int(s/60)}m"
+    if s < 86400: return f"{int(s/3600)}h"
+    return f"{int(s/86400)}d"
 
-def _run_py(*args):
-    try:
-        subprocess.run([sys.executable] + [str(a) for a in args], cwd="/home/ubuntu/melissa")
-    except Exception as e:
-        console.print(f"  [error]Error: {e}[/error]")
+def _py(*a):
+    try: subprocess.run([sys.executable]+[str(x) for x in a], cwd="/home/ubuntu/melissa")
+    except Exception as e: con.print(f"    [err]{e}[/err]")
 
-def _exec(*args):
-    try:
-        subprocess.run(list(args))
-    except Exception as e:
-        console.print(f"  [error]Error: {e}[/error]")
+def _sh(*a):
+    try: subprocess.run(list(a))
+    except Exception as e: con.print(f"    [err]{e}[/err]")
 
 
-# ─── Main ────────────────────────────────────────────────────────────────────
+# ─── Entry ───────────────────────────────────────────────────────────────────
 
 def main():
-    signal.signal(signal.SIGINT, lambda *_: (console.print("\n"), sys.exit(0)))
-
+    signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
+    if first_run() and not (len(sys.argv)>1 and sys.argv[1] in ("help","--help","-h","-v","--version")):
+        onboard()
     if len(sys.argv) <= 1:
-        # No args: show help (like modern CLIs)
-        if is_first_run():
-            onboarding()
-        else:
-            print_help()
-        return
-
-    cmd = sys.argv[1]
-    args = " ".join(sys.argv[2:])
-
-    if is_first_run() and cmd not in ("help", "--help", "-h", "--version", "-v"):
-        onboarding()
-
-    dispatch(cmd, args)
-
+        help()
+    else:
+        route(sys.argv[1], " ".join(sys.argv[2:]))
 
 if __name__ == "__main__":
     main()
