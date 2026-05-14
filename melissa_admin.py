@@ -107,6 +107,18 @@ class MelissaAdmin:
         # Cargar historial de pacientes recientes (para que admin sepa quién escribió)
         recent_patients_summary = self._get_recent_patients_summary(db, chat_id)
 
+        # If admin asks for specific patient conversation, load it
+        specific_convo = ""
+        import re as _re
+        convo_request = _re.search(r'(?:conversaci[oó]n|chat|mensajes?|historial).*?(\d{4,})', text.lower())
+        if convo_request:
+            specific_convo = self._get_full_conversation(db, convo_request.group(1), chat_id)
+        elif any(w in text.lower() for w in ["mostrame", "muéstrame", "muestrame", "show me"]):
+            # Try to find a patient ID in the message
+            id_match = _re.search(r'(\d{4,})', text)
+            if id_match:
+                specific_convo = self._get_full_conversation(db, id_match.group(1), chat_id)
+
         # Cargar alma/memoria del negocio
         soul_context = self._load_soul(instance_id)
         teachings_context = self._load_teachings(instance_id)
@@ -138,6 +150,8 @@ SITUACIÓN ACTUAL:
 - NO eres un bot, eres una persona nueva en el equipo
 
 {"NIVEL: Ya sé bastante del negocio. Puedo operar con confianza." if knowledge_level == "ready" else "NIVEL: Todavía estoy aprendiendo. Necesito que me enseñes más." if knowledge_level == "learning" else "NIVEL: Soy nueva. Necesito conocer TODO sobre el negocio."}
+
+{f"CONVERSACIÓN SOLICITADA:{chr(10)}{specific_convo}" if specific_convo else ""}
 
 ACTIVIDAD RECIENTE (pacientes que me han escrito):
 {recent_patients_summary if recent_patients_summary else "Nadie me ha escrito todavía."}
@@ -447,6 +461,38 @@ EJEMPLO MALO:
             log.info(f"[admin] Google credentials auto-configured for {instance_id}")
         except Exception as e:
             log.warning(f"[admin] auto-configure Google failed: {e}")
+
+    def _get_full_conversation(self, db, patient_id_fragment: str, admin_chat_id: str) -> str:
+        """Get full conversation with a specific patient (by partial ID)."""
+        try:
+            with db._conn() as c:
+                # Find matching chat_id
+                rows = c.execute("""
+                    SELECT DISTINCT chat_id FROM conversations
+                    WHERE chat_id != ? AND chat_id LIKE ?
+                    ORDER BY id DESC LIMIT 1
+                """, (admin_chat_id, f"%{patient_id_fragment}%")).fetchall()
+                if not rows:
+                    return ""
+                full_chat_id = rows[0][0] if isinstance(rows[0], tuple) else rows[0]["chat_id"]
+
+                # Get all messages for that chat
+                msgs = c.execute("""
+                    SELECT role, content FROM conversations
+                    WHERE chat_id = ? ORDER BY id ASC
+                """, (full_chat_id,)).fetchall()
+                if not msgs:
+                    return ""
+
+                lines = [f"Conversación con paciente ...{full_chat_id.split('@')[0][-4:]}:"]
+                for m in msgs:
+                    role = m[0] if isinstance(m, tuple) else m["role"]
+                    content = m[1] if isinstance(m, tuple) else m["content"]
+                    label = "Paciente" if role == "user" else "Melissa"
+                    lines.append(f"  [{label}] {content[:200]}")
+                return "\n".join(lines[-30:])
+        except Exception:
+            return ""
 
     def _get_recent_patients_summary(self, db, admin_chat_id: str) -> str:
         """Get summary of recent patient conversations (excluding admin)."""
