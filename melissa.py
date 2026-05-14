@@ -12460,15 +12460,30 @@ class MelissaUltra:
         except Exception as e:
             log.error(f"Error processing message from {chat_id}: {e}", exc_info=True)
             db.record_metric("error", "message_processing", 1, {"error": str(e)})
-            
-            # Recuperación: si estamos en setup y algo falla, avisamos y pedimos reintentar
-            clinic = db.get_clinic()
-            if not clinic.get("setup_done"):
-                return [
-                    "Perdona, tuve un pequeño error técnico mientras configurábamos.",
-                    "¿Podrías repetir lo último que me dijiste? O si prefieres, escribe /reset para empezar el setup de nuevo."
-                ]
-            return ["Perdona, tuve un pequeño cruce de cables. ¿Me podrías repetir eso último?"]
+
+            # Recuperación inteligente: intentar respuesta LLM directa como fallback
+            try:
+                if llm_engine and text and text.strip():
+                    clinic = db.get_clinic()
+                    biz_name = clinic.get("name", "") if clinic else ""
+                    fallback_sys = f"Eres Melissa, recepcionista virtual{' de ' + biz_name if biz_name else ''}. Responde de forma breve, cálida y natural. Si no tienes contexto suficiente, pide al usuario que te cuente más."
+                    fallback_r, _ = await llm_engine.complete(
+                        [{"role": "system", "content": fallback_sys}, {"role": "user", "content": text}],
+                        model_tier="fast", temperature=0.8, max_tokens=200, use_cache=False,
+                    )
+                    if fallback_r and fallback_r.strip():
+                        return self._split_bubbles(fallback_r, chat_id=chat_id)
+            except Exception:
+                pass
+
+            # Último recurso: respuesta genérica humana (nunca decir "cruce de cables")
+            import random as _r
+            _fallbacks = [
+                "cuéntame un poco más, no te alcancé a entender bien",
+                "perdona, me perdí un momento ||| qué me decías?",
+                "disculpa, no te pillé bien ||| me repites?",
+            ]
+            return [_r.choice(_fallbacks)]
     async def _handle_demo_message(self, chat_id: str, text: str,
                                     clinic: Dict,
                                     attachments: Optional[List[Dict[str, Any]]] = None) -> List[str]:
