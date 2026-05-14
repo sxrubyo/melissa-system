@@ -168,7 +168,18 @@ class CommandHandler:
 
         if cmd in ("/personalidad", "/persona"):
             if not args:
-                return ["Uso: /personalidad tono=formal nombre=Sofía"]
+                return [
+                    "Personalidades disponibles:\n"
+                    "  formal — profesional, usted, sin jerga\n"
+                    "  amigable — cercana, tutea, cálida\n"
+                    "  luxury — sofisticada, exclusiva, elegante\n"
+                    "  casual — relajada, como amiga\n"
+                    "  directa — concisa, sin rodeos\n"
+                    "  juvenil — fresca, emojis, moderna\n"
+                    "  experta — técnica, confiable, precisa\n\n"
+                    "Para cambiar: /personalidad tono=luxury\n"
+                    "O escribe: 'modo luxury' / 'modo formal' / 'modo casual'"
+                ]
             updates = {}
             for pair in re.findall(r'(\w+)=("[^"]+"|[^\s]+)', args):
                 key, val = pair
