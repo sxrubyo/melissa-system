@@ -21,9 +21,9 @@ ROBOT_PATTERNS = [
     (re.compile(r"¡+", re.I), ""),  # Remove excessive exclamation
     (re.compile(r"^\s*¡\s*", re.I), ""),
     (re.compile(r",?\s*tu\s+asistente\s+virtual[.,]?\s*", re.I), ". "),
-    (re.compile(r"(?:como|en mi rol de) (?:asistente|recepcionista) virtual", re.I), ""),
-    (re.compile(r"(?:soy\s+)?(?:tu\s+)?(?:asistente|recepcionista)\s+virtual", re.I), ""),
-    (re.compile(r"estoy aquí para (ayudarte|servirte|atenderte)", re.I), ""),
+    (re.compile(r"(?:como|en mi rol de) asistente virtual", re.I), ""),
+    (re.compile(r"(?:soy\s+)?(?:tu\s+)?asistente\s+virtual", re.I), ""),
+    (re.compile(r"estoy aquí para (servirte|atenderte)", re.I), ""),
     (re.compile(r"no dudes en", re.I), ""),
     (re.compile(r"estaré encantad[ao] de", re.I), ""),
     (re.compile(r"será un placer", re.I), ""),

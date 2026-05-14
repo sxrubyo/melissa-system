@@ -41,22 +41,39 @@ class MelissaProduction:
             detected_lang = lang_det.detect(text)
             lang_instruction = lang_det.get_language_instruction(detected_lang)
 
+            # Explicit human request detection
+            human_request_signals = ["hablar con humano", "hablar con una persona", "hablar con alguien",
+                                     "quiero hablar con", "pasame con", "pásame con", "un humano",
+                                     "una persona real", "talk to a human", "real person"]
+            wants_human = any(s in text.lower() for s in human_request_signals)
+
             # Sentiment check → auto-escalate if frustrated
             sentiment = SentimentTracker()
             should_esc, esc_reason = sentiment.should_escalate(text, history)
-            if should_esc:
+            if should_esc or wants_human:
                 admin_ids = clinic.get("admin_chat_ids", [])
                 if isinstance(admin_ids, str):
                     import json as _j2
                     admin_ids = _j2.loads(admin_ids) if admin_ids else []
                 if admin_ids:
+                    admin_jid_esc = str(admin_ids[0])
+                    reason_text = "quiere hablar con alguien" if wants_human else esc_reason.replace('_', ' ')
+                    alert = f"oye, un paciente ({chat_id.split('@')[0][-4:]}) {reason_text}:\n\"{text[:150]}\""
                     try:
-                        await self.melissa._send_message(
-                            str(admin_ids[0]),
-                            f"ojo, un paciente suena {esc_reason.replace('_', ' ')}:\n\"{text[:150]}\""
-                        )
+                        await self.melissa._send_message(admin_jid_esc, alert)
+                        log.info(f"[production] escalation alert sent: {reason_text}")
+                    except Exception as _e:
+                        log.warning(f"[production] escalation alert failed: {_e}")
+
+                # If wants human → respond directly and return
+                if wants_human:
+                    human_response = "ya le aviso a alguien del equipo que te escriba ||| dame un momentito"
+                    try:
+                        db.save_message(chat_id, "user", text)
+                        db.save_message(chat_id, "assistant", human_response.replace("|||", " "))
                     except Exception:
                         pass
+                    return self.melissa._split_bubbles(human_response, chat_id=chat_id)
 
             # Conversation ending detection
             if is_conversation_ending(text):
@@ -145,7 +162,9 @@ REGLAS GENERALES:
 - {tone_instruction.split(':')[0]} — aplica este tono en CADA respuesta
 - Una sola pregunta por turno, enfocada en avanzar la conversación
 - Si el paciente quiere cita: pide nombre, servicio, fecha preferida
-- NUNCA digas "como IA", "no tengo capacidad", "asistente virtual"
+- NUNCA digas "no tengo capacidad", "está fuera de mi alcance"
+- Si preguntan "eres IA?" → responde HONESTA y breve: "sí, soy una IA 😊 pero estoy aquí pa ayudarte, dime en qué te puedo servir"
+- NUNCA evadas la pregunta de si eres IA. Sé directa, no insistas ni te pongas a la defensiva
 - NUNCA uses formato markdown (**, *, _, #, `)
 - Usa máximo 2-3 burbujas separadas por |||
 - Sé concisa (máx 40 palabras por burbuja)
