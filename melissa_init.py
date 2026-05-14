@@ -14,6 +14,10 @@ from datetime import datetime
 sys.path.insert(0, str(Path(__file__).parent))
 from melissa_tui_select import select_menu, confirm, text_input
 
+VERSION = "9.3.4"
+try: VERSION = json.loads((Path(__file__).parent / "package.json").read_text()).get("version", VERSION)
+except: pass
+
 PURPLE = "\033[38;5;141m"
 BOLD = "\033[1m"
 DIM = "\033[2m"
@@ -87,8 +91,8 @@ def run_wizard():
   {DIM}Use ↑/↓ to navigate, Enter to confirm.{R}
 """)
 
-    if not confirm("Empezamos?"):
-        print(f"\n  {DIM}Ok. Cuando quieras: melissa new{R}\n")
+    if not confirm("Ready?"):
+        print(f"\n  {DIM}Ok. Run: melissa new{R}\n")
         return
 
     step_header(1, 6, "Negocio")
@@ -119,8 +123,8 @@ def run_wizard():
     print(f"    Tono:      {tone}")
     print()
 
-    if not confirm("Crear instancia?"):
-        print(f"\n  {DIM}Cancelado.{R}\n")
+    if not confirm("Create instance?"):
+        print(f"\n  {DIM}Cancelled.{R}\n")
         return
 
     print(f"\n  {DIM}Creando...{R}")

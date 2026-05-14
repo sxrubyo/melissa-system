@@ -216,10 +216,8 @@ def first_run():
 
 def onboard():
     con.print(); con.print(LOGO_FULL)
-    con.print(f"\n    [bold]Welcome.[/bold] [dim]Let's set up your first instance.[/dim]\n")
-    r = con.input("    [m]⬡[/m] ready? [dim](y/n)[/dim] ")
-    if r.lower() in ("y","yes","s","si","sí",""):
-        con.print(); cmd_new()
+    con.print(f"\n    [bold]First time setup.[/bold]\n")
+    cmd_new()
     Path(os.path.expanduser("~/.melissa")).mkdir(parents=True,exist_ok=True)
     Path(os.path.expanduser("~/.melissa/initialized")).write_text(time.strftime("%Y-%m-%d"))
 

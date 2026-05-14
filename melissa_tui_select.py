@@ -141,24 +141,31 @@ def _fallback(options, title="", default=0):
 
 
 def confirm(text: str, default: bool = True) -> bool:
-    """Y/N confirmation with colored prompt."""
-    hint = f"{GREEN}Y{RESET}/n" if default else f"y/{GREEN}N{RESET}"
-    try:
-        ans = input(f"  {text} ({hint}) ")
-    except (EOFError, KeyboardInterrupt):
-        return default
-    if not ans:
-        return default
-    return ans.lower() in ("y", "yes", "s", "si", "sí")
+    """Y/N as arrow-key selector (never disappears)."""
+    if not is_tty():
+        try:
+            ans = input(f"  {text} (y/n) ")
+            return ans.lower() in ("y", "yes", "s", "si", "sí", "")
+        except: return default
+
+    options = ["Yes", "No"] if default else ["No", "Yes"]
+    idx = select_menu(options, title=text, default=0)
+    if default:
+        return idx == 0
+    else:
+        return idx == 1
 
 
 def text_input(label: str, default: str = "", required: bool = True) -> str:
-    """Text input with default value."""
+    """Text input that stays visible."""
     suffix = f" {DIM}[{default}]{RESET}" if default else ""
     while True:
         try:
-            val = input(f"  {label}{suffix}: ").strip()
+            sys.stdout.write(f"\n  {PURPLE}▸{RESET} {label}{suffix}: ")
+            sys.stdout.flush()
+            val = sys.stdin.readline().strip()
         except (EOFError, KeyboardInterrupt):
+            print()
             return default
         if val:
             return val
@@ -166,4 +173,5 @@ def text_input(label: str, default: str = "", required: bool = True) -> str:
             return default
         if not required:
             return ""
-        print(f"  {DIM}campo requerido{RESET}")
+        sys.stdout.write(f"    {DIM}(required){RESET}\n")
+        sys.stdout.flush()
