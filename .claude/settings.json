@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep:*)",
+      "Bash(find:*)",
+      "Bash(ls:*)",
+      "Bash(cat:*)",
+      "Bash(wc:*)",
+      "Bash(pm2 list*)",
+      "Bash(pm2 logs*)",
+      "Bash(pm2 restart*)",
+      "Bash(git status*)",
+      "Bash(git log*)",
+      "Bash(git diff*)",
+      "Bash(git branch*)",
+      "Bash(curl*localhost*)",
+      "Bash(ss -tlnp*)",
+      "Bash(python*py_compile*)",
+      "Bash(python*pytest*)",
+      "Bash(.venv/bin/python*)"
+    ]
+  }
+}

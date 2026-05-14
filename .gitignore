@@ -101,3 +101,10 @@ id_ed25519*
 *.pre_merge*
 *.patch
 .nova/
+
+# Runtime data (never commit)
+melissa-context.md
+model_configs/
+teachings/
+memory_store/
+knowledge_gaps/
