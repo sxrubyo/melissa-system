@@ -72,6 +72,20 @@ class MelissaAdmin:
         # Cargar historial de pacientes recientes (para que admin sepa quién escribió)
         recent_patients_summary = self._get_recent_patients_summary(db, chat_id)
 
+        # Auto-investigar si el admin pide o si Melissa necesita info
+        web_research = ""
+        research_triggers = ["investiga", "busca", "google", "averigua", "informate", "infórmate", "buscar"]
+        if any(t in text.lower() for t in research_triggers) or (
+            not soul_context and clinic_name and clinic_name != "tu negocio"
+        ):
+            try:
+                from melissa_web_search import search_business
+                web_research = await search_business(clinic_name)
+                if web_research:
+                    self._append_soul(instance_id, f"[investigación web] {web_research[:500]}")
+            except Exception as e:
+                log.debug(f"[admin] web search failed: {e}")
+
         # Cargar alma/memoria del negocio
         soul_context = self._load_soul(instance_id)
         teachings_context = self._load_teachings(instance_id)
@@ -91,6 +105,8 @@ SITUACIÓN ACTUAL:
 
 ACTIVIDAD RECIENTE (pacientes que me han escrito):
 {recent_patients_summary if recent_patients_summary else "Nadie me ha escrito todavía."}
+
+{"INVESTIGACIÓN WEB RECIENTE:" + chr(10) + web_research if web_research else ""}
 
 LO QUE YA SÉ DEL NEGOCIO:
 {soul_context if soul_context else "Casi nada todavía. Necesito que me cuentes."}
