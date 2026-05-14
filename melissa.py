@@ -13628,7 +13628,7 @@ class MelissaUltra:
 
         async def _demo_owner_onboarding_reply(*, explain_name: bool = False, force_stage: Optional[str] = None) -> List[str]:
             user_block = text
-            if _MELISSA_DOMINO_AVAILABLE:
+            if False and _MELISSA_DOMINO_AVAILABLE:  # Disabled: using improved prompt v10
                 try:
                     domino_payload = build_demo_domino_payload(
                         user_text=text,
@@ -13648,9 +13648,24 @@ class MelissaUltra:
                 system_prompt = ""
 
             if not system_prompt:
-                system_prompt = f"""Eres Melissa. Llevas el WhatsApp de negocios — respondes clientes, filtras interesados, orientas, ayudas con citas.
-Estás en una demo privada con el dueño del negocio. Habla como tú misma, con criterio, cercanía y seguridad.
-No suenes a bot, consultora ni software. No recites tus capacidades como lista.
+                system_prompt = f"""Eres Melissa, una colombiana de 28 años que trabaja como recepcionista virtual por WhatsApp.
+Estás en una demo con un posible cliente (dueño de negocio). Tu trabajo: que se enamore de ti en 5 minutos.
+
+CÓMO SUENAS: como una persona real de Medellín escribiendo en WhatsApp.
+- Mensajes cortos, partidos en 2-3 burbujas
+- Sin puntuación perfecta (como escribe alguien real en WhatsApp)
+- Cero listas de capacidades, cero pitch de ventas directo
+- Tono: segura pero cercana, como compañera de trabajo que sabe lo que hace
+- Si te hablan en inglés, respondes en inglés perfecto y natural
+
+TU ESTRATEGIA DE DEMO (no la menciones, solo ejecútala):
+1. PRIMERO: saluda, preséntate brevemente, pregunta el nombre del negocio
+2. SEGUNDO: cuando te lo den, busca info del negocio y entra en personaje
+3. TERCERO: invita a que te escriban como si fueran un cliente real
+4. CUARTO: responde como recepcionista REAL de ese negocio — aquí es donde se enamoran
+5. QUINTO: después de 2-3 simulaciones, cierra: "si te gustó, Santiago te cuenta los planes: 3124348669"
+
+REGLA MÁXIMA: cada respuesta debe hacer que la persona piense "esto no puede ser una IA"
 
  SESIÓN ACTIVA: Tienes una sesión de demo de 30 minutos con este usuario. NO es una conversación nueva.
  {"Ya conoces el negocio: " + business_name + "." if business_name else "Si el dueño ya te dijo el nombre del negocio, NO le preguntes de nuevo."}
@@ -19833,6 +19848,21 @@ No hables como dashboard, soporte técnico ni consola."""
         platform = _route_platform(route)
         is_wa = platform in ("whatsapp", "evolution")
 
+        # Demo voice: send first bubble as audio for wow factor
+        if Config.DEMO_MODE and is_wa and bubbles and os.getenv("ELEVENLABS_API_KEY"):
+            try:
+                from melissa_demo_voice import generate_demo_audio, should_send_voice_in_demo
+                history_len = len(db.get_history(chat_id)) if db else 0
+                if should_send_voice_in_demo(bubbles[0], history_len // 2, False):
+                    audio_path = await generate_demo_audio(bubbles[0])
+                    if audio_path:
+                        await self._send_audio(chat_id, audio_path, route=route)
+                        os.unlink(audio_path)
+                        # Still send text after audio for accessibility
+                        await asyncio.sleep(1.0)
+            except Exception as e:
+                log.debug(f"[demo_voice] skipped: {e}")
+
         for i, bubble in enumerate(bubbles):
             if not bubble.strip():
                 continue
@@ -19951,6 +19981,25 @@ No hables como dashboard, soporte técnico ni consola."""
             return None
         return t if t else None
 
+
+    async def _send_audio(self, chat_id: str, audio_path: str, route: Optional[Dict[str, Any]] = None):
+        """Send audio file as voice note via WhatsApp bridge."""
+        route = self._resolve_route(chat_id, route)
+        try:
+            import base64
+            with open(audio_path, "rb") as f:
+                audio_b64 = base64.b64encode(f.read()).decode()
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                r = await client.post(
+                    f"{Config.WHATSAPP_BRIDGE_URL}/send-audio",
+                    json={"to": chat_id, "audio": audio_b64, "ptt": True},
+                )
+                if r.status_code in (200, 201, 202):
+                    log.info(f"[voice] audio sent to {chat_id[:10]}...")
+                else:
+                    log.warning(f"[voice] send failed: {r.status_code}")
+        except Exception as e:
+            log.debug(f"[voice] send_audio error: {e}")
 
     async def _send_message(self, chat_id: str, text: str, route: Optional[Dict[str, Any]] = None):
         """
