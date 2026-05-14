@@ -70,10 +70,33 @@ class CommandHandler:
     async def _handle_user(self, cmd: str, args: str, chat_id: str,
                            clinic: Optional[Dict], db) -> Optional[List[str]]:
         if cmd in ("/ayuda", "/help"):
-            lines = ["Comandos disponibles:"]
-            for c, desc in USER_COMMANDS.items():
-                lines.append(f"  {c} — {desc}")
+            lines = [
+                "Comandos disponibles:",
+                "  /help — ver esta lista",
+                "  /personalidad — ver y cambiar personalidades",
+                "  /reset — empezar de cero con otro negocio",
+                "  /modelo — cambiar modelo de IA",
+                "",
+                "También puedes escribir sin /:",
+                "  'formal' 'luxury' 'casual' — cambiar tono",
+                "  'reset' — reiniciar demo",
+                "  'stats' — ver estadísticas",
+                "",
+                "Quieres probarme? Dime el nombre de tu negocio y escríbeme como si fueras un cliente",
+            ]
             return ["\n".join(lines)]
+
+        if cmd == "/personalidad":
+            return [
+                "Personalidades disponibles:",
+                "  formal — profesional, usted, sin jerga\n"
+                "  amigable — cercana, tutea, cálida\n"
+                "  luxury — sofisticada, exclusiva, elegante\n"
+                "  directa — concisa, sin rodeos\n"
+                "  juvenil — fresca, emojis, moderna\n"
+                "  experta — técnica, confiable, precisa",
+                "Escribe el nombre de la personalidad para verla en acción"
+            ]
 
         if cmd == "/horarios":
             hours = (clinic or {}).get("schedule", "No configurado")

@@ -12044,6 +12044,10 @@ class MelissaUltra:
             "simulación", "modo demo", "tengo un negocio", "tengo una empresa",
             "what is this", "what do you do", "who are you", "english only",
             "i don't talk spanish", "i dont talk spanish", "i don't understand", "i dont understand",
+            "me mandaron", "me enviaron", "me pasaron", "me recomendaron",
+            "no se que es", "no sé qué es", "que es esto", "qué es esto",
+            "como funciona esto", "cómo funciona esto", "para que sirve", "para qué sirve",
+            "me dijeron que", "alguien me dijo", "me lo recomendaron",
         )
         if any(exc in normalized for exc in owner_exceptions):
             return False
@@ -12441,6 +12445,17 @@ class MelissaUltra:
             if not is_simulation and auth_engine and auth_engine.is_auth_message(chat_id, text):
                 result = await auth_engine.process(chat_id, text)
                 if result: return result
+
+            # 1.5. Slash commands (works in all modes)
+            if text.strip().startswith("/"):
+                try:
+                    from melissa_commands import get_command_handler
+                    _cmd_h = get_command_handler(getattr(self, "_instance_id", "default"))
+                    _cmd_result = await _cmd_h.handle(chat_id, text.strip(), is_admin=False, clinic=clinic, db=db)
+                    if _cmd_result:
+                        return _cmd_result
+                except Exception:
+                    pass
 
             # 2. MODO DEMO
             if Config.DEMO_MODE:
