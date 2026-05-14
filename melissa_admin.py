@@ -210,6 +210,11 @@ EJEMPLO MALO:
         await self._auto_learn(instance_id, text, response, chat_id)
 
         from melissa import v8_process_response
+        # Strip ** (WhatsApp uses single * for bold, not **)
+        import re as _re
+        response = _re.sub(r'\*\*(.+?)\*\*', r'*\1*', response)
+        response = _re.sub(r'`(.+?)`', r'\1', response)
+        response = _re.sub(r'^#+\s*', '', response, flags=_re.MULTILINE)
         response = v8_process_response(response, chat_id=chat_id)
         return self.melissa._split_bubbles(response, chat_id=chat_id)
 
@@ -449,7 +454,7 @@ EJEMPLO MALO:
             import sqlite3
             with db._conn() as c:
                 rows = c.execute("""
-                    SELECT chat_id, content, role, created_at
+                    SELECT chat_id, content, role
                     FROM conversations
                     WHERE chat_id != ? AND role = 'user'
                     ORDER BY id DESC LIMIT 20
