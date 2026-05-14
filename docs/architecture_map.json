@@ -1,0 +1,206 @@
+{
+  "brand_assets.py": [],
+  "chat_melissa.py": [],
+  "knowledge_base.py": [],
+  "melissa-chat.py": [],
+  "melissa-omni.py": [],
+  "melissa.py": [
+    "brand_assets.py",
+    "knowledge_base.py",
+    "melissa_admin.py",
+    "melissa_audio.py",
+    "melissa_brain_v10.py",
+    "melissa_core/__init__.py",
+    "melissa_core/first_turn_ops.py",
+    "melissa_core/prompt_ops.py",
+    "melissa_demo.py",
+    "melissa_domino.py",
+    "melissa_generator.py",
+    "melissa_i18n.py",
+    "melissa_intelligence.py",
+    "melissa_nuke_robot_phrases.py",
+    "melissa_pitch_upgrade.py",
+    "melissa_production.py",
+    "melissa_send_guard.py",
+    "melissa_session.py",
+    "melissa_utils.py",
+    "nova_bridge.py",
+    "search.py",
+    "smart_handoff.py",
+    "v7/orchestrator.py"
+  ],
+  "melissa_admin.py": [
+    "melissa.py",
+    "melissa_utils.py"
+  ],
+  "melissa_agents/__init__.py": [],
+  "melissa_agents/agenda.py": [],
+  "melissa_agents/captacion.py": [],
+  "melissa_agents/conocimiento.py": [],
+  "melissa_agents/escalacion.py": [],
+  "melissa_agents/objeciones.py": [],
+  "melissa_agents/seguimiento.py": [],
+  "melissa_audio.py": [
+    "melissa_config.py"
+  ],
+  "melissa_brain_v10.py": [],
+  "melissa_bridge.py": [
+    "melissa.py"
+  ],
+  "melissa_cli.py": [
+    "melissa_cli_bb.py",
+    "melissa_i18n.py"
+  ],
+  "melissa_cli_bb.py": [],
+  "melissa_config.py": [],
+  "melissa_core/__init__.py": [
+    "melissa_core/conversation_engine.py",
+    "melissa_core/persona_registry.py"
+  ],
+  "melissa_core/conversation_engine.py": [
+    "melissa_core/persona_registry.py"
+  ],
+  "melissa_core/first_turn_ops.py": [],
+  "melissa_core/persona_registry.py": [],
+  "melissa_core/prompt_ops.py": [],
+  "melissa_cron.py": [],
+  "melissa_demo.py": [],
+  "melissa_domino.py": [],
+  "melissa_generator.py": [
+    "melissa_config.py"
+  ],
+  "melissa_i18n.py": [],
+  "melissa_integrations/__init__.py": [],
+  "melissa_integrations/llm.py": [],
+  "melissa_integrations/whatsapp.py": [],
+  "melissa_intelligence.py": [],
+  "melissa_memory.py": [],
+  "melissa_nuke_robot_phrases.py": [],
+  "melissa_pairing.py": [],
+  "melissa_patch.py": [],
+  "melissa_pitch_upgrade.py": [],
+  "melissa_production.py": [
+    "melissa.py"
+  ],
+  "melissa_router.py": [
+    "melissa_config.py"
+  ],
+  "melissa_send_guard.py": [
+    "melissa_pitch_upgrade.py"
+  ],
+  "melissa_session.py": [
+    "melissa_config.py"
+  ],
+  "melissa_skills/__init__.py": [],
+  "melissa_skills/demo_mode.py": [
+    "melissa_i18n.py"
+  ],
+  "melissa_skills/text_processing.py": [],
+  "melissa_skills/tone_detection.py": [],
+  "melissa_sync_fix.py": [],
+  "melissa_tui.py": [],
+  "melissa_utils.py": [],
+  "melissa_voice.py": [],
+  "nova_bridge.py": [],
+  "scripts/long_conversation_harness.py": [],
+  "search.py": [],
+  "smart_handoff.py": [
+    "knowledge_base.py"
+  ],
+  "test_conversation.py": [
+    "melissa.py"
+  ],
+  "tests/test_demo_patient_entry.py": [
+    "melissa.py",
+    "melissa_domino.py"
+  ],
+  "tests/test_melissa_bridge.py": [
+    "melissa_bridge.py"
+  ],
+  "tests/test_patient_greeting_flow.py": [
+    "melissa_brain_v10.py",
+    "melissa_core/conversation_engine.py",
+    "melissa_core/first_turn_ops.py",
+    "melissa_core/persona_registry.py"
+  ],
+  "tests/test_robot_phrase_boundaries.py": [
+    "melissa_nuke_robot_phrases.py",
+    "melissa_send_guard.py"
+  ],
+  "tests/test_search_and_llm_runtime.py": [],
+  "tests/test_smart_handoff.py": [
+    "smart_handoff.py"
+  ],
+  "tests/test_sync_runtime.py": [
+    "melissa_cli.py"
+  ],
+  "tests/test_telegram_webhook_mode.py": [],
+  "v7/__init__.py": [
+    "v7/agents/agenda.py",
+    "v7/agents/base.py",
+    "v7/agents/captacion.py",
+    "v7/agents/conocimiento.py",
+    "v7/agents/escalacion.py",
+    "v7/agents/objeciones.py",
+    "v7/agents/seguimiento.py",
+    "v7/router.py"
+  ],
+  "v7/agents/__init__.py": [
+    "v7/agents/agenda.py",
+    "v7/agents/base.py",
+    "v7/agents/captacion.py",
+    "v7/agents/conocimiento.py",
+    "v7/agents/escalacion.py",
+    "v7/agents/objeciones.py",
+    "v7/agents/seguimiento.py",
+    "v7/router.py"
+  ],
+  "v7/agents/agenda.py": [
+    "v7/agents/base.py",
+    "v7/postprocess.py"
+  ],
+  "v7/agents/base.py": [
+    "v7/postprocess.py"
+  ],
+  "v7/agents/captacion.py": [
+    "v7/agents/base.py",
+    "v7/postprocess.py"
+  ],
+  "v7/agents/conocimiento.py": [
+    "v7/agents/base.py",
+    "v7/postprocess.py"
+  ],
+  "v7/agents/escalacion.py": [
+    "v7/agents/base.py",
+    "v7/postprocess.py"
+  ],
+  "v7/agents/objeciones.py": [
+    "v7/agents/base.py",
+    "v7/postprocess.py"
+  ],
+  "v7/agents/seguimiento.py": [
+    "v7/agents/base.py",
+    "v7/postprocess.py"
+  ],
+  "v7/memory/__init__.py": [
+    "v7/agents/agenda.py",
+    "v7/agents/base.py",
+    "v7/agents/captacion.py",
+    "v7/agents/conocimiento.py",
+    "v7/agents/escalacion.py",
+    "v7/agents/objeciones.py",
+    "v7/agents/seguimiento.py",
+    "v7/router.py"
+  ],
+  "v7/memory/patient_profile.py": [],
+  "v7/orchestrator.py": [
+    "v7/agents/__init__.py",
+    "v7/agents/base.py",
+    "v7/memory/patient_profile.py",
+    "v7/postprocess.py",
+    "v7/router.py"
+  ],
+  "v7/postprocess.py": [],
+  "v7/router.py": [],
+  "verify_conversation_impl.py": []
+}

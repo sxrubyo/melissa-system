@@ -648,6 +648,19 @@ class SmartAdminHandoff:
             log.error(f"[handoff] Error enviando al cliente: {exc}")
             return True, [f"⚠️ Error enviando al cliente: {exc}"]
 
+        # Melissa aprende de la respuesta del admin (V9)
+        try:
+            from knowledge_base import kb as _kb
+            if _kb and _kb.has_content():
+                # Obtenemos el mensaje original del paciente del ticket
+                with self._conn() as c:
+                    row = c.execute("SELECT patient_raw FROM handoff_queue WHERE id=?", (ticket_id,)).fetchone()
+                    if row:
+                        _kb.save_learned_fact(row["patient_raw"], polished, source="admin_handoff")
+                        log.info(f"[handoff] Aprendizaje registrado para ticket {ticket_id}")
+        except Exception as e:
+            log.warning(f"[handoff] Error guardando aprendizaje: {e}")
+
         self._mark_replied(ticket_id, admin_raw=text, melissa_reply=polished)
         self._cancel_timeout(ticket_id)
         self._clear_ticket_mappings(ticket)

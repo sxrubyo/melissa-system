@@ -173,6 +173,11 @@ class KnowledgeBase:
 
     # ─── Ingestion ────────────────────────────────────────────────────────────
 
+    def save_learned_fact(self, question: str, answer: str, source: str = "admin") -> Dict:
+        """Guarda un hecho aprendido directamente de la interacción con el admin."""
+        fact_text = f"\n\n--- DATO APRENDIDO ({source}) ---\nPREGUNTA: {question}\nRESPUESTA: {answer}"
+        return self.append(fact_text)
+
     def ingest(self, raw_text: str) -> Dict:
         """
         Procesa y guarda el documento maestro de la clinica.

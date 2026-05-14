@@ -49,8 +49,8 @@ def _strip_leading_greeting(text: str) -> str:
 def _first_contact_intro(clinic: Dict[str, Any], agent_name: str = "Melissa") -> str:
     clinic_name = (clinic.get("name") or "").strip()
     if clinic_name:
-        return f"Hola, soy {agent_name}, la asesora virtual de {clinic_name}"
-    return f"Hola, soy {agent_name}, la asesora virtual"
+        return f"Hola! Soy {agent_name} de {clinic_name}."
+    return f"Hola! Soy {agent_name}."
 
 
 def _first_contact_welcome_line(clinic: Dict[str, Any], user_msg: str) -> str:
@@ -66,20 +66,21 @@ def _first_contact_welcome_line(clinic: Dict[str, Any], user_msg: str) -> str:
         opening = "Hola, buenas"
     else:
         opening = "Hola"
+    
     if clinic_name:
-        return f"{opening}, bienvenido a {clinic_name}"
-    return f"{opening}, bienvenido"
+        return f"{opening}! Bienvenido a {clinic_name}."
+    return f"{opening}! Cómo estás?"
 
 
 def _first_contact_identity_line(clinic: Dict[str, Any], agent_name: str = "Melissa") -> str:
     clinic_name = (clinic.get("name") or "").strip()
     if clinic_name:
-        return f"Soy {agent_name}, la asesora virtual de {clinic_name}"
-    return f"Soy {agent_name}, la asesora virtual"
+        return f"Soy {agent_name}, me encargo de la recepción en {clinic_name}."
+    return f"Soy {agent_name}, estoy aquí para ayudarte."
 
 
 def _first_contact_question_line() -> str:
-    return "Cómo podemos ayudarte?"
+    return "Cuéntame, qué necesitas?"
 
 
 def _first_contact_followup(clinic: Dict[str, Any]) -> str:
@@ -88,10 +89,10 @@ def _first_contact_followup(clinic: Dict[str, Any]) -> str:
         lead_services = ", ".join(str(service).strip() for service in services[:3] if str(service).strip())
         if lead_services:
             return (
-                f"Si quieres, te ubico con citas, horarios y servicios como {lead_services}. "
-                "Qué te gustaría revisar?"
+                f"Te puedo ayudar con citas, precios o info de {lead_services}. "
+                "Qué te gustaría saber?"
             )
-    return "Si quieres, te ubico con citas, horarios o el servicio que necesites. Qué te gustaría revisar?"
+    return "Te puedo ayudar con citas, horarios o lo que necesites. Qué tienes en mente?"
 
 
 def _clean_first_contact_part(text: str) -> str:

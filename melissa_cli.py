@@ -84,7 +84,7 @@ import platform, re, argparse, tarfile, sqlite3, csv
 from pathlib import Path
 from datetime import datetime, timedelta
 from functools import lru_cache
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Set
 from dataclasses import dataclass, field
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -142,6 +142,7 @@ COMMANDS = [
     "env-check", "warmup", "watchdog", "rollforward", "watch", "live", "diagnose", "obs", "skills", "skill", "aprender", "desaprender", "entrenar", "simular-cliente", "skills", "skill", "aprender", "desaprender", "entrenar", "trainer", "simular-cliente", "cliente", "gateway", "control",
     # i18n — multilingual
     "language", "idioma", "lang", "locale",
+    "demo",
 ]
 
 try:
@@ -1179,9 +1180,21 @@ def slug(name):
     return re.sub(r'[^a-z0-9]+', '-', n).strip('-')
 
 def next_port():
-    """Encontrar siguiente puerto disponible."""
+    """Encontrar siguiente puerto disponible — evita puertos usados por instancias existentes."""
     import socket
+    # Collect all ports already assigned to existing instances
+    used_ports: Set[int] = {BASE_PORT}
+    try:
+        for inst in get_instances():
+            used_ports.add(inst.port)
+    except Exception:
+        pass
+
+    # También detectar puertos realmente en uso (socket bind fallará igual,
+    # pero esto ayuda a filtrar rápido sin probar cada uno)
     for p in range(BASE_PORT + 1, MAX_PORT + 1):
+        if p in used_ports:
+            continue
         with socket.socket() as s:
             try:
                 s.bind(("0.0.0.0", p))
@@ -1190,7 +1203,7 @@ def next_port():
                 pass
     return None
 
-def health(port, timeout=2):
+def health(port: int, timeout: float = 5) -> Dict:
     """Health check rápido."""
     url = f"http://localhost:{port}/health"
     try:
@@ -1201,6 +1214,16 @@ def health(port, timeout=2):
             return json.loads(urllib.request.urlopen(url, timeout=timeout).read())
     except Exception:
         return {}
+
+def _health_with_retry(port: int, max_retries: int = 5, delay: float = 1.5) -> Dict:
+    """Health check con retry y backoff exponencial — para después de restart."""
+    for attempt in range(max_retries):
+        h = health(port, timeout=3)
+        if h and h.get("status") == "online":
+            return h
+        wait = delay * (1.5 ** attempt)
+        time.sleep(wait)
+    return health(port, timeout=5)
 
 def health_batch(ports, timeout=2):
     """Health check en paralelo."""
@@ -3498,7 +3521,12 @@ def cmd_zero(args):
                     pass
         sp.finish(f"Datos borrados ({removed} archivos de base de datos)")
 
-    # ── Paso 4: Configurar para el nuevo cliente (wizard) ─────────────────────
+    # ── Paso 4: Nuevo puerto + configurar para el nuevo cliente ───────────────
+    port = next_port()
+    if not port:
+        fail("Sin puertos disponibles (8002-8199)")
+        return
+
     nl()
     section("Configurar para el nuevo cliente", "Puedes cambiar todo o dejar igual")
 
@@ -3555,6 +3583,7 @@ def cmd_zero(args):
             update_env_key(ev_path, "TELEGRAM_TOKEN", nuevo_token)
         if nuevo_sector != inst.sector:
             update_env_key(ev_path, "SECTOR", nuevo_sector)
+        update_env_key(ev_path, "PORT", str(port))
 
         # Rotar MASTER_API_KEY y WEBHOOK_SECRET para el nuevo cliente
         import secrets as _s
@@ -3574,6 +3603,7 @@ def cmd_zero(args):
         meta.update({
             "label":       nuevo_label,
             "sector":      nuevo_sector,
+            "port":        port,
             "zeroed_at":   datetime.utcnow().isoformat() + "Z",
             "zeroed_from": inst.label,
         })
@@ -3586,9 +3616,8 @@ def cmd_zero(args):
         pm2("delete", pm2_name)
         time.sleep(1)
         subprocess.run([
-            "pm2", "start", f"{inst.dir}/melissa.py",
+            "pm2", "start", f"{inst.dir}/run.sh",
             "--name",          pm2_name,
-            "--interpreter",   "python3",
             "--cwd",           inst.dir,
             "--restart-delay", "3000",
             "--max-restarts",  "10",
@@ -3596,14 +3625,13 @@ def cmd_zero(args):
             "--error",         f"{inst.dir}/logs/error.log",
         ], capture_output=True)
         pm2_save()
-        time.sleep(4)
-        h = health(inst.port)
+        h = _health_with_retry(port)
         sp.finish("Online — esperando nuevo admin ✓" if h else "Arrancando...", ok=bool(h))
 
-    # ── Paso 7: Reconfigurar webhook en Telegram si cambió el token ───────────
     if nuevo_token and nuevo_token != tg_actual:
         ev_fresh   = dict(load_env(ev_path))
         base_url   = ev_fresh.get("BASE_URL", ev.get("BASE_URL", ""))
+        wh_url     = f"{base_url}/webhook/{nuevo_wh_secret}"
         wh_url     = f"{base_url}/webhook/{nuevo_wh_secret}"
 
         with Spinner("Registrando webhook en Telegram...") as sp:
@@ -4272,7 +4300,7 @@ def cmd_chat(args):
 
     section(f"Chat — {inst.label}", f"Puerto :{inst.port}")
 
-    h = health(inst.port)
+    h = _health_with_retry(port)
     if not h:
         fail(f"'{inst.label}' no está online")
         nl()
@@ -4955,14 +4983,53 @@ def cmd_demo(args):
       ✓ Cada persona tiene 30 min de sesión independiente
 
     Uso:
-      melissa demo           → wizard interactivo
-      melissa demo off       → desactivar demo mode
-      melissa demo status    → ver estado actual
+      melissa demo              → wizard: activar demo (muestra status primero)
+      melissa demo status       → ver estado de todas las instancias
+      melissa demo off          → desactivar demo mode
     """
     print_logo(compact=True)
 
     sub  = getattr(args, 'subcommand', '') or ''
     name = getattr(args, 'name', '') or ''
+
+    # Si no hay subcommand → iniciar wizard de activación (mostrar status + preguntar)
+    if not sub:
+        # Mostrar status rápido
+        instances = get_instances()
+        has_demo = any(
+            dict(load_env(f"{i.dir}/.env")).get("DEMO_MODE", "false").lower() == "true"
+            for i in instances
+        )
+        if has_demo:
+            section("Modo Demo", "Instancias con demo activo:")
+            nl()
+            for inst in instances:
+                ev = dict(load_env(f"{inst.dir}/.env"))
+                if ev.get("DEMO_MODE", "false").lower() == "true":
+                    h = health(inst.port)
+                    status = q(C.GRN, "online") if h else q(C.RED, "offline")
+                    kv(inst.label, f"◉ DEMO · {status}")
+                    kv("  Negocio", ev.get("DEMO_BUSINESS_NAME", "?"))
+                    kv("  Sector",  ev.get("DEMO_SECTOR", "?"))
+        else:
+            section("Modo Demo", "No hay instancias en modo demo")
+            nl()
+            print(f"  {q(C.G3, '○')}  {q(C.G2, 'No hay instancias en modo demo')}")
+
+        nl()
+        activate = confirm("¿Activar modo demo en una instancia?", default=False)
+        if not activate:
+            nl()
+            print(f"  Comandos: {q(C.CYN, 'melissa demo status')} · {q(C.CYN, 'melissa demo off')}")
+            nl()
+            return
+
+        # Wizard de activación
+        nl()
+        print(f"  {q(C.YLW, '◉', bold=True)}  {q(C.W, 'Cómo funciona:', bold=True)}")
+        print(f"       Cualquier persona que le escriba recibe a Melissa.")
+        print(f"       Sin tokens. Sin setup. Instantáneo.")
+        nl()
 
     # ── melissa demo off ──────────────────────────────────────────────────────
     if sub in ("off", "apagar", "stop", "desactivar"):
@@ -5008,15 +5075,6 @@ def cmd_demo(args):
         return
 
     # ── Wizard de activación ──────────────────────────────────────────────────
-    section("Modo Demo", "Para ventas en campo")
-
-    nl()
-    print(f"  {q(C.YLW, '◉', bold=True)}  {q(C.W, 'Cómo funciona:', bold=True)}")
-    print(f"       Cualquier persona que le escriba al bot")
-    print(f"       recibe a Melissa respondiendo como recepcionista real.")
-    print(f"       Sin tokens. Sin setup. Instantáneo.")
-    print(f"       Cada persona tiene su propia sesión de 30 minutos.")
-    nl()
 
     # Seleccionar instancia
     instances = get_instances()
@@ -6514,7 +6572,6 @@ def cmd_bridge(args):
         elif len(instances) == 1:
             inst = instances[0]
         else:
-            # Mostrar lista y preguntar — el bridge sirve a UNA sola instancia
             labels = []
             for i in instances:
                 demo = " [DEMO-responde a todos]" if i.env.get("DEMO_MODE","false").lower()=="true" else ""
@@ -6545,6 +6602,44 @@ def cmd_bridge(args):
             sp.finish("Bridge reiniciado")
         ok("Bridge configurado y reiniciado")
         info("Escríbele a Melissa por WhatsApp para probar")
+
+    elif sub == "fix-bridge":
+        info("Ejecutando /fix-bridge (limpieza de sesión + reconexión automática)...")
+        try:
+            if _HTTPX:
+                r = _httpx.post(f"http://localhost:{bridge_port}/fix-bridge", timeout=10)
+            else:
+                data = json.dumps({}).encode()
+                req = urllib.request.Request(
+                    f"http://localhost:{bridge_port}/fix-bridge",
+                    data=data,
+                    headers={"Content-Type": "application/json"}
+                )
+                r = urllib.request.urlopen(req, timeout=10)
+            result = json.loads(r.text)
+            status_str = result.get("status", "?")
+            cleaned = result.get("cleaned_files", 0)
+            info(f"Bridge en status: {status_str}")
+            info(f"Archivos limpiados: {cleaned}")
+            if result.get("ok"):
+                ok("Fix-bridge exitoso — esperando conexión...")
+                info("Espera ~20s y verifica con: melissa bridge")
+            else:
+                fail(f"Fix-bridge falló: {result.get('error', '?')}")
+        except Exception as ex:
+            fail(f"Error conectando al bridge: {ex}")
+
+    elif sub == "reconnect":
+        info("Reconectando bridge via /reconnect...")
+        try:
+            if _HTTPX:
+                r = _httpx.get(f"http://localhost:{bridge_port}/reconnect", timeout=15)
+            else:
+                r = urllib.request.urlopen(f"http://localhost:{bridge_port}/reconnect", timeout=15)
+            result = json.loads(r.text)
+            ok(f"Reconnect: status={result.get('status','?')}, ok={result.get('ok')}")
+        except Exception as ex:
+            fail(f"Error: {ex}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
