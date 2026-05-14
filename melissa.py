@@ -4322,7 +4322,6 @@ class AntiRobotFilter:
         "soy tu asistente virtual",
         "soy una asistente virtual",
         "la asistente virtual",
-        "la recepcionista virtual",
         "mis capacidades",
         "mis limitaciones",
         "no tengo acceso a",

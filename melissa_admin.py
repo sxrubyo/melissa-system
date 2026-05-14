@@ -69,6 +69,9 @@ class MelissaAdmin:
         clinic_name = clinic.get("name", "tu negocio")
         history = db.get_history(chat_id) if db else []
 
+        # Cargar historial de pacientes recientes (para que admin sepa quién escribió)
+        recent_patients_summary = self._get_recent_patients_summary(db, chat_id)
+
         # Cargar alma/memoria del negocio
         soul_context = self._load_soul(instance_id)
         teachings_context = self._load_teachings(instance_id)
@@ -85,6 +88,9 @@ SITUACIÓN ACTUAL:
 - NO eres un bot, eres una persona nueva en el equipo
 
 {"NIVEL: Ya sé bastante del negocio. Puedo operar con confianza." if knowledge_level == "ready" else "NIVEL: Todavía estoy aprendiendo. Necesito que me enseñes más." if knowledge_level == "learning" else "NIVEL: Soy nueva. Necesito conocer TODO sobre el negocio."}
+
+ACTIVIDAD RECIENTE (pacientes que me han escrito):
+{recent_patients_summary if recent_patients_summary else "Nadie me ha escrito todavía."}
 
 LO QUE YA SÉ DEL NEGOCIO:
 {soul_context if soul_context else "Casi nada todavía. Necesito que me cuentes."}
@@ -185,6 +191,37 @@ EJEMPLO MALO:
                 self._append_soul(instance_id, admin_text)
             except Exception as e:
                 log.debug(f"[admin] auto_learn error: {e}")
+
+    def _get_recent_patients_summary(self, db, admin_chat_id: str) -> str:
+        """Get summary of recent patient conversations (excluding admin)."""
+        try:
+            import sqlite3
+            with db._conn() as c:
+                rows = c.execute("""
+                    SELECT chat_id, content, role, created_at
+                    FROM conversations
+                    WHERE chat_id != ? AND role = 'user'
+                    ORDER BY id DESC LIMIT 20
+                """, (admin_chat_id,)).fetchall()
+            if not rows:
+                return ""
+            # Group by chat_id
+            patients = {}
+            for row in rows:
+                cid = row[0] if isinstance(row, tuple) else row["chat_id"]
+                content = row[1] if isinstance(row, tuple) else row["content"]
+                if cid not in patients:
+                    patients[cid] = []
+                patients[cid].append(content[:100])
+
+            lines = []
+            for cid, msgs in list(patients.items())[:5]:
+                short_id = cid.split("@")[0][-4:] if "@" in cid else cid[-4:]
+                first_msg = msgs[0] if msgs else "?"
+                lines.append(f"- Paciente ...{short_id}: \"{first_msg[:80]}\" ({len(msgs)} msgs)")
+            return "\n".join(lines)
+        except Exception:
+            return ""
 
     def _load_soul(self, instance_id: str) -> str:
         """Cargar el 'alma' — todo lo que Melissa sabe del negocio."""

@@ -21,6 +21,7 @@ class MelissaProduction:
         from melissa import db, llm_engine, kb, v8_process_response
 
         start_time = time.time()
+        instance_id = getattr(self.melissa, "_instance_id", "default")
         clinic_name = clinic.get("name", "el negocio")
         services = clinic.get("services", [])
         if isinstance(services, str):
@@ -118,7 +119,7 @@ REGLAS:
                     except Exception:
                         pass
         except Exception as e:
-            log.debug(f"[production] uncertainty check skipped: {e}")
+            log.error(f"[production] uncertainty check FAILED: {e}", exc_info=True)
 
         # Save to DB
         try:

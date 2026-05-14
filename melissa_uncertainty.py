@@ -55,9 +55,10 @@ class UncertaintyDetector:
         )
 
     def confidence_score(self, response: str, user_msg: str, history: list) -> float:
-        """Score confidence 0.0-1.0 based on heuristics."""
+        """Score confidence 0.0-1.0. Detects evasion, not just explicit uncertainty."""
         score = 1.0
         text_low = response.lower()
+        user_low = user_msg.lower()
 
         # Penalty for uncertainty markers
         marker_count = sum(
@@ -80,7 +81,35 @@ class UncertaintyDetector:
         if any(d in text_low for d in deflection):
             score -= 0.15
 
-        # Bonus for specific information (contains numbers)
+        # === NEW: Detect PRICE evasion ===
+        # User asked about price but response has no numbers/amounts
+        price_signals = ["cuanto", "cuánto", "precio", "vale", "cuesta", "cobran", "tarifa", "costo", "promo"]
+        user_asked_price = any(s in user_low for s in price_signals)
+        response_has_price = bool(re.search(r'\$?\d[\d.,]+', response)) or any(
+            w in text_low for w in ("gratis", "sin costo", "incluido")
+        )
+        if user_asked_price and not response_has_price:
+            score -= 0.45  # Heavy penalty: user asked price, we don't know it
+
+        # === NEW: Detect SERVICE evasion ===
+        # User asked about specific service but response says "we don't do that" or redirects
+        service_denial = [
+            "no manejamos", "no ofrecemos", "no realizamos", "no hacemos",
+            "no contamos con", "nuestra especialidad es", "solo manejamos",
+            "solo ofrecemos", "no tenemos ese",
+        ]
+        if any(d in text_low for d in service_denial):
+            score -= 0.3  # She might be wrong — she doesn't actually know the full service list
+
+        # === NEW: Detect "depende" evasion ===
+        vague_deflectors = [
+            "depende del servicio", "depende de la valoración", "depende del caso",
+            "te confirmo", "déjame verificar", "let me check",
+        ]
+        if any(d in text_low for d in vague_deflectors) and user_asked_price:
+            score -= 0.35  # Vague + user wanted specifics = she doesn't know
+
+        # Bonus for specific information (contains numbers/concrete data)
         if any(c.isdigit() for c in response):
             score += 0.1
 
